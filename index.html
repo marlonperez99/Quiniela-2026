@@ -295,6 +295,20 @@ body, html {
 .wc-team { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 .wc-team.right { justify-content: flex-end; }
 .wc-flag { font-size: 18px; }
+.wc-flag-badge {
+  font-size: 9px !important;
+  font-family: 'Oswald', sans-serif;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  padding: 2px 5px;
+  border-radius: 3px;
+  line-height: 1;
+  display: inline-block;
+  vertical-align: middle;
+}
 .wc-score-cell { display: flex; align-items: center; gap: 6px; }
 .wc-vs { font-size: 10px; color: var(--text-dim); letter-spacing: 1px; }
 .wc-standings { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border); }
@@ -797,7 +811,7 @@ const GROUPS = {
 const FLAGS = {
   'México': '🇲🇽', 'Sudáfrica': '🇿🇦', 'Corea del Sur': '🇰🇷', 'Chequia': '🇨🇿',
   'Canadá': '🇨🇦', 'Suiza': '🇨🇭', 'Catar': '🇶🇦', 'Bosnia-Herzegovina': '🇧🇦',
-  'Brasil': '🇧🇷', 'Marruecos': '🇲🇦', 'Escocia': '🏴󠁧󠁢󠁳󠁣󠁴󠁿', 'Haití': '🇭🇹',
+  'Brasil': '🇧🇷', 'Marruecos': '🇲🇦', 'Escocia': 'SCO', 'Haití': '🇭🇹',
   'Estados Unidos': '🇺🇸', 'Paraguay': '🇵🇾', 'Australia': '🇦🇺', 'Turquía': '🇹🇷',
   'Alemania': '🇩🇪', 'Ecuador': '🇪🇨', 'Costa de Marfil': '🇨🇮', 'Curazao': '🇨🇼',
   'Países Bajos': '🇳🇱', 'Japón': '🇯🇵', 'Túnez': '🇹🇳', 'Suecia': '🇸🇪',
@@ -806,7 +820,22 @@ const FLAGS = {
   'Francia': '🇫🇷', 'Senegal': '🇸🇳', 'Noruega': '🇳🇴', 'Iraq': '🇮🇶',
   'Argentina': '🇦🇷', 'Austria': '🇦🇹', 'Argelia': '🇩🇿', 'Jordania': '🇯🇴',
   'Portugal': '🇵🇹', 'Colombia': '🇨🇴', 'Uzbekistán': '🇺🇿', 'RD Congo': '🇨🇩',
-  'Inglaterra': '🏴󠁧󠁢󠁥󠁮󠁧󠁿', 'Croacia': '🇭🇷', 'Panamá': '🇵🇦', 'Ghana': '🇬🇭'
+  'Inglaterra': 'ENG', 'Croacia': '🇭🇷', 'Panamá': '🇵🇦', 'Ghana': '🇬🇭'
+};
+
+// Ranking FIFA oficial (junio 2026) — usado como último criterio de desempate
+// de los mejores terceros, igual que en el reglamento real de FIFA.
+const FIFA_RANK = {
+  'Francia': 1, 'España': 2, 'Argentina': 3, 'Inglaterra': 4, 'Portugal': 5, 'Brasil': 6,
+  'Países Bajos': 7, 'Marruecos': 8, 'Bélgica': 9, 'Alemania': 10, 'Croacia': 11,
+  'Colombia': 13, 'Senegal': 14, 'México': 15, 'Estados Unidos': 16, 'Uruguay': 17,
+  'Japón': 18, 'Suiza': 19, 'Irán': 21, 'Turquía': 22, 'Austria': 23, 'Ecuador': 24,
+  'Corea del Sur': 25, 'Australia': 27, 'Egipto': 28, 'Argelia': 29, 'Canadá': 30,
+  'Noruega': 31, 'Panamá': 33, 'Costa de Marfil': 34, 'Suecia': 38, 'Paraguay': 40,
+  'Chequia': 41, 'Escocia': 43, 'Túnez': 45, 'RD Congo': 46, 'Uzbekistán': 50,
+  'Catar': 55, 'Iraq': 57, 'Sudáfrica': 60, 'Arabia Saudita': 61, 'Jordania': 63,
+  'Bosnia-Herzegovina': 65, 'Cabo Verde': 68, 'Ghana': 74, 'Curazao': 82, 'Haití': 83,
+  'Nueva Zelanda': 85
 };
 
 const ANNEX_C = {
@@ -1428,11 +1457,14 @@ const state = {
   own: {},
   imported: {},
   realResults: null,     // estructura igual a predictions
+  realAuth: false,       // sesión: ¿ya ingresó la contraseña de admin?
   modal: null,           // { type, ... }
   activeTab: 'groups',
   saveStatus: 'idle',    // idle | saving | saved
   importInput: ''
 };
+
+const ADMIN_PASSWORD = 'MARLON';
 
 function render() {
   const root = document.getElementById('root');
@@ -1475,6 +1507,21 @@ function el(tag, attrs = {}, ...children) {
     }
   }
   return e;
+}
+
+// Devuelve el indicador visual del equipo: emoji de bandera, o badge de texto
+// (para Escocia/Inglaterra, cuyas banderas de subdivisión no renderizan en muchos
+// dispositivos y se ven como una bandera negra).
+function flagSpan(team, cls) {
+  const f = FLAGS[team] || '⚽';
+  const isText = /^[A-Z]{2,4}$/.test(f); // abreviatura tipo SCO, ENG
+  const className = (cls || 'wc-flag') + (isText ? ' wc-flag-badge' : '');
+  return el('span', { className }, f);
+}
+
+// Versión inline (string) para casos donde se concatena texto con la bandera.
+function flagText(team) {
+  return FLAGS[team] || '⚽';
 }
 
 function buildHeader() {
@@ -1539,10 +1586,11 @@ function buildHome() {
         )
       ),
       el('div', { className: 'wc-card', style: { borderLeft: '3px solid var(--accent-green)' } },
-        el('div', { className: 'wc-card-title' }, '✓ Resultados Reales'),
+        el('div', { className: 'wc-card-title' }, '🔒 Resultados Reales'),
         el('div', { style: { fontSize: '13px', color: 'var(--text-dim)', marginBottom: '14px', lineHeight: '1.5' } },
           'Ingresa los marcadores reales del Mundial conforme se vayan jugando los partidos. ' +
-          'Esto puntúa todas las quinielas en el ranking.'
+          'Esto puntúa todas las quinielas en el ranking. ',
+          el('strong', { style: { color: 'var(--text-muted)' } }, 'Solo el administrador (con contraseña).')
         ),
         el('button', { className: 'wc-btn wc-btn-secondary', onClick: handleEnterRealResults },
           state.realResults ? 'Editar resultados reales' : 'Ingresar resultados reales →'
@@ -1961,7 +2009,7 @@ function buildGroupCard(letter, teams, data, readOnly) {
 
     row.appendChild(el('div', { className: 'wc-team right' },
       el('span', { className: 'wc-team-name' }, pair[0]),
-      el('span', { className: 'wc-flag' }, FLAGS[pair[0]] || '⚽')
+      flagSpan(pair[0])
     ));
 
     row.appendChild(el('div', { className: 'wc-score-cell' },
@@ -1977,7 +2025,7 @@ function buildGroupCard(letter, teams, data, readOnly) {
     ));
 
     row.appendChild(el('div', { className: 'wc-team' },
-      el('span', { className: 'wc-flag' }, FLAGS[pair[1]] || '⚽'),
+      flagSpan(pair[1]),
       el('span', { className: 'wc-team-name' }, pair[1])
     ));
 
@@ -2044,6 +2092,8 @@ function computeStandings(teams, groupData) {
     if (b.PTS !== a.PTS) return b.PTS - a.PTS;
     if (b.DG !== a.DG) return b.DG - a.DG;
     if (b.GF !== a.GF) return b.GF - a.GF;
+    const ra = FIFA_RANK[a.team] || 999, rb = FIFA_RANK[b.team] || 999;
+    if (ra !== rb) return ra - rb;
     return a.team.localeCompare(b.team);
   });
 }
@@ -2132,8 +2182,13 @@ function computeBracket(predictions) {
   for (const letter of 'ABCDEFGHIJKL') {
     if (TH[letter]) thirds.push({ group: letter, ...TH[letter] });
   }
+  // Criterios FIFA: Puntos → Dif. goles → Goles a favor → Ranking FIFA (menor = mejor)
   thirds.sort((a, b) =>
-    b.PTS - a.PTS || b.DG - a.DG || b.GF - a.GF || a.group.localeCompare(b.group)
+    b.PTS - a.PTS ||
+    b.DG - a.DG ||
+    b.GF - a.GF ||
+    (FIFA_RANK[a.team] || 999) - (FIFA_RANK[b.team] || 999) ||
+    a.group.localeCompare(b.group)
   );
 
   // 4. Mejores 8 → consulta tabla Anexo C de FIFA
@@ -2385,7 +2440,7 @@ function buildStandings(teams, data) {
     row.appendChild(el('td', { className: 'pos-cell' }, String(idx + 1)));
     row.appendChild(el('td', { className: 'team-col' },
       el('div', { className: 'wc-team-cell' },
-        el('span', { className: 'flag' }, FLAGS[s.team] || '⚽'),
+        flagSpan(s.team, 'flag'),
         el('span', {}, s.team)
       )
     ));
@@ -2447,14 +2502,14 @@ function buildKnockoutMatch(computed, stored, label, placeholderA, placeholderB,
   const team1Label = computed.t1
     ? el('div', { className: 'wc-ko-team-label right' },
         el('span', {}, computed.t1),
-        el('span', { className: 'flag' }, FLAGS[computed.t1] || '⚽')
+        flagSpan(computed.t1, 'flag')
       )
     : el('div', { className: 'wc-ko-team-label right placeholder' }, placeholderA);
 
   // Etiqueta equipo 2 (read-only)
   const team2Label = computed.t2
     ? el('div', { className: 'wc-ko-team-label' },
-        el('span', { className: 'flag' }, FLAGS[computed.t2] || '⚽'),
+        flagSpan(computed.t2, 'flag'),
         el('span', {}, computed.t2)
       )
     : el('div', { className: 'wc-ko-team-label placeholder' }, placeholderB);
@@ -2482,7 +2537,7 @@ function buildKnockoutMatch(computed, stored, label, placeholderA, placeholderB,
           stored.pen = team;
           renderPenPicker();
         }
-      }, (FLAGS[team] || '') + ' ' + team);
+      }, flagText(team) + ' ' + team);
       options.appendChild(btn);
     });
     penPicker.appendChild(options);
@@ -2527,7 +2582,7 @@ function buildThirdsPanel(bracket) {
     wrap.appendChild(el('div', { className: 'wc-thirds-row ' + cls },
       el('div', { className: 'wc-thirds-rank' }, String(idx + 1)),
       el('div', { className: 'wc-thirds-group' }, t.group),
-      el('div', {}, (FLAGS[t.team] || '⚽') + ' ' + t.team),
+      el('div', {}, flagSpan(t.team, 'flag'), ' ' + t.team),
       el('div', { className: 'wc-thirds-stats' },
         t.PTS + 'pts · ' + (t.DG >= 0 ? '+' : '') + t.DG + 'dg · ' + t.GF + 'gf'
       )
@@ -2540,6 +2595,31 @@ function buildThirdsPanel(bracket) {
 function buildModal() {
   if (!state.modal) return null;
   const m = state.modal;
+
+  if (m.type === 'password') {
+    return el('div', { className: 'wc-modal-backdrop', onClick: (e) => { if (e.target.className === 'wc-modal-backdrop') closeModal(); } },
+      el('div', { className: 'wc-modal' },
+        el('div', { className: 'wc-modal-title' }, '🔒 Acceso restringido'),
+        el('div', { className: 'wc-modal-text' },
+          'Los resultados reales solo los puede ingresar el administrador. Escribe la contraseña para continuar.'
+        ),
+        el('input', {
+          className: 'wc-input',
+          type: 'password',
+          placeholder: 'Contraseña',
+          value: m.input,
+          autofocus: 'autofocus',
+          onInput: (e) => { state.modal.input = e.target.value; state.modal.error = false; },
+          onKeydown: (e) => { if (e.key === 'Enter') submitPassword(); }
+        }),
+        m.error ? el('div', { style: { color: 'var(--accent-red)', fontSize: '12px', marginTop: '8px' } }, 'Contraseña incorrecta. Intenta de nuevo.') : null,
+        el('div', { className: 'wc-modal-actions', style: { marginTop: '18px' } },
+          el('button', { className: 'wc-btn wc-btn-ghost', onClick: closeModal }, 'Cancelar'),
+          el('button', { className: 'wc-btn', onClick: submitPassword }, 'Entrar')
+        )
+      )
+    );
+  }
 
   if (m.type === 'share') {
     const url = m.url;
@@ -2700,11 +2780,37 @@ async function handleSave() {
 }
 
 function handleEnterRealResults() {
+  if (!state.realAuth) {
+    state.modal = { type: 'password', target: 'realResults', input: '', error: false };
+    render();
+    return;
+  }
   if (!state.realResults) state.realResults = emptyPredictions();
   state.view = 'realResults';
   state.activeTab = 'groups';
   state.saveStatus = 'idle';
   render();
+}
+
+function submitPassword() {
+  const m = state.modal;
+  if (!m || m.type !== 'password') return;
+  if (m.input === ADMIN_PASSWORD) {
+    state.realAuth = true;
+    const target = m.target;
+    state.modal = null;
+    if (target === 'realResults') {
+      if (!state.realResults) state.realResults = emptyPredictions();
+      state.view = 'realResults';
+      state.activeTab = 'groups';
+      state.saveStatus = 'idle';
+    }
+    render();
+  } else {
+    state.modal.error = true;
+    state.modal.input = '';
+    render();
+  }
 }
 
 async function handleSaveRealResults() {
