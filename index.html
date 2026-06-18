@@ -7,6 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500;600;700&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js" defer></script>
 <style>
 :root {
   --bg: #060914;
@@ -586,8 +587,26 @@ body, html {
   color: var(--text-muted);
   text-align: center;
   letter-spacing: 1px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
 }
 .wc-ranking-pos.pos-1 { font-size: 32px; }
+.wc-move {
+  font-family: 'Oswald', sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 3px;
+}
+.wc-move.up   { color: var(--accent-green); background: rgba(46,168,104,0.14); }
+.wc-move.down { color: var(--accent-red);   background: rgba(205,37,51,0.16); }
+.wc-move.same { color: var(--text-dim); font-size: 12px; padding: 0; background: none; }
+.wc-move.new  { color: var(--gold); background: rgba(201,164,76,0.14); font-size: 9px; }
 .wc-ranking-name { min-width: 0; }
 .wc-ranking-participant {
   font-family: 'Oswald', sans-serif;
@@ -648,6 +667,28 @@ body, html {
   text-transform: uppercase;
 }
 .wc-ranking-actions { white-space: nowrap; }
+
+/* Contenedor capturable para exportar el ranking como imagen */
+.wc-capture {
+  background:
+    radial-gradient(ellipse at top, rgba(201,164,76,0.06), transparent 50%),
+    var(--bg);
+  padding: 8px;
+  border-radius: 4px;
+}
+.wc-capture-foot {
+  display: none;
+  margin-top: 18px;
+  text-align: center;
+  font-family: 'Oswald', sans-serif;
+  font-size: 11px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+/* Mientras se genera la imagen: ocultar botones de acción y mostrar el pie */
+.wc-capture.exporting .wc-ranking-actions { display: none; }
+.wc-capture.exporting .wc-capture-foot { display: block; }
 @media (max-width: 720px) {
   .wc-ranking-row {
     grid-template-columns: 50px 1fr auto;
@@ -1371,15 +1412,16 @@ const STORAGE_KEY = 'wc26_quinielas_v1';
 function loadStored() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return { own: {}, imported: {}, realResults: null };
+    if (!raw) return { own: {}, imported: {}, realResults: null, previousRanking: {} };
     const parsed = JSON.parse(raw);
     return {
       own: parsed.own || {},
       imported: parsed.imported || {},
-      realResults: parsed.realResults || null
+      realResults: parsed.realResults || null,
+      previousRanking: parsed.previousRanking || {}
     };
   } catch (e) {
-    return { own: {}, imported: {}, realResults: null };
+    return { own: {}, imported: {}, realResults: null, previousRanking: {} };
   }
 }
 
@@ -1388,7 +1430,8 @@ function saveStored() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
       own: state.own,
       imported: state.imported,
-      realResults: state.realResults
+      realResults: state.realResults,
+      previousRanking: state.previousRanking
     }));
   } catch (e) {
     alert('No se pudo guardar. Verifica que tu navegador permita el almacenamiento local.');
@@ -1458,6 +1501,9 @@ const state = {
   imported: {},
   realResults: null,     // estructura igual a predictions
   realAuth: false,       // sesión: ¿ya ingresó la contraseña de admin?
+  previousRanking: {},   // { quinielaId: posiciónPrevia } para las flechas ▲▼
+  rankingSnapshot: null, // foto de posiciones tomada al abrir resultados reales
+  snapshotHadResults: false, // ¿había resultados reales al tomar la foto?
   modal: null,           // { type, ... }
   activeTab: 'groups',
   saveStatus: 'idle',    // idle | saving | saved
@@ -1598,6 +1644,20 @@ function buildHome() {
       )
     ),
 
+    // Herramientas de administrador (respaldo)
+    el('div', { className: 'wc-card', style: { borderLeft: '3px solid var(--border-strong)' } },
+      el('div', { className: 'wc-card-title' }, '🛠️ Herramientas de administrador'),
+      el('div', { style: { fontSize: '13px', color: 'var(--text-dim)', marginBottom: '14px', lineHeight: '1.5' } },
+        'Descarga un respaldo de todas las quinielas guardadas en este dispositivo (propias e importadas) en un archivo. ' +
+        'Guárdalo en lugar seguro: te sirve si cambias de navegador o antes de una actualización. ' +
+        'Restaurar agrega las quinielas del archivo sin borrar las que ya tienes.'
+      ),
+      el('div', { style: { display: 'flex', gap: '10px', flexWrap: 'wrap' } },
+        el('button', { className: 'wc-btn wc-btn-secondary wc-btn-sm', onClick: handleExportBackup }, '⬇ Exportar respaldo (.json)'),
+        el('button', { className: 'wc-btn wc-btn-ghost wc-btn-sm', onClick: handleRestoreBackup }, '⬆ Restaurar respaldo')
+      )
+    ),
+
     el('div', { className: 'wc-grid-2' },
       // Crear nueva
       el('div', { className: 'wc-card' },
@@ -1679,33 +1739,52 @@ function buildQuinielaItem(q) {
   );
 }
 
-function buildRanking() {
-  // Reunir todas las quinielas (propias e importadas)
+// Devuelve todas las quinielas con su puntaje, ya ordenadas (mismo criterio del ranking)
+function computeRanking() {
   const all = [
     ...Object.entries(state.own).map(([id, q]) => ({ id, ...q, source: 'own' })),
     ...Object.entries(state.imported).map(([id, q]) => ({ id, ...q, source: 'imported' }))
   ];
-
-  // Calcular puntos
-  const scored = all.map(q => {
-    const result = scoreQuiniela(q.predictions, state.realResults);
-    return { ...q, score: result };
-  });
-
-  // Ordenar por puntos descendente, luego por exactos descendente
+  const scored = all.map(q => ({ ...q, score: scoreQuiniela(q.predictions, state.realResults) }));
   scored.sort((a, b) => {
     if (b.score.total !== a.score.total) return b.score.total - a.score.total;
     const aExact = a.score.breakdown ? Object.values(a.score.breakdown).reduce((s, x) => s + x.exact, 0) : 0;
     const bExact = b.score.breakdown ? Object.values(b.score.breakdown).reduce((s, x) => s + x.exact, 0) : 0;
     return bExact - aExact;
   });
+  return scored;
+}
+
+// Foto { quinielaId: posición } del ranking actual (según los resultados reales guardados)
+function snapshotRankingPositions() {
+  const pos = {};
+  computeRanking().forEach((q, idx) => { pos[q.id] = idx; });
+  return pos;
+}
+
+function buildRanking() {
+  // Reunir todas las quinielas (propias e importadas) y calcular puntos
+  const scored = computeRanking();
 
   const realCount = countRealMatchesEntered(state.realResults);
+  const hasArrows = state.previousRanking && Object.keys(state.previousRanking).length > 0;
 
   const container = el('div', { className: 'wc-container' });
-  container.appendChild(el('button', { className: 'wc-back-link', onClick: handleBack }, '← Volver'));
 
-  container.appendChild(el('div', { className: 'wc-hero' },
+  // Barra superior (no se incluye en la imagen)
+  container.appendChild(el('div', {
+    style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px', marginBottom: '8px' }
+  },
+    el('button', { className: 'wc-back-link', style: { marginBottom: '0' }, onClick: handleBack }, '← Volver'),
+    scored.length > 0
+      ? el('button', { className: 'wc-btn wc-btn-secondary wc-btn-sm', id: 'wc-export-img-btn', onClick: exportRankingImage }, '📷 Descargar como imagen')
+      : null
+  ));
+
+  // === Bloque capturable para la imagen JPG ===
+  const capture = el('div', { id: 'wc-ranking-capture', className: 'wc-capture' });
+
+  capture.appendChild(el('div', { className: 'wc-hero' },
     el('div', { className: 'wc-hero-eyebrow' }, 'Ranking Mundial 2026'),
     el('h1', { className: 'wc-hero-title' }, '🏆 Ranking'),
     el('div', { className: 'wc-hero-rule' }),
@@ -1713,12 +1792,11 @@ function buildRanking() {
       state.realResults
         ? 'Basado en ' + realCount.total + ' partidos con resultado real ingresado ' +
           '(' + realCount.groups + ' de grupos · ' + realCount.ko + ' eliminatorias).'
-        : 'Aún no has ingresado ningún resultado real. Ingrésalos para que aparezcan los puntos.'
+        : 'Aún no se han ingresado resultados reales. Ingrésalos para que aparezcan los puntos.'
     )
   ));
 
-  // Tabla de sistema de puntos (info)
-  container.appendChild(el('div', { className: 'wc-info' },
+  capture.appendChild(el('div', { className: 'wc-info' },
     el('strong', {}, 'Sistema de puntos: '),
     'Grupos 1/3 · R32 y Octavos 2/5 · Cuartos 4/8 · Semis y 3er Lugar 5/10 · Final 8/15 ',
     el('span', { style: { color: 'var(--text-dim)', fontStyle: 'italic' } },
@@ -1727,9 +1805,10 @@ function buildRanking() {
   ));
 
   if (scored.length === 0) {
-    container.appendChild(el('div', { className: 'wc-empty' },
+    capture.appendChild(el('div', { className: 'wc-empty' },
       'No hay quinielas creadas o importadas todavía.'
     ));
+    container.appendChild(capture);
     return container;
   }
 
@@ -1739,11 +1818,27 @@ function buildRanking() {
     const isLeader = idx === 0 && q.score.total > 0;
     const row = el('div', { className: 'wc-ranking-row' + (isLeader ? ' leader' : '') });
 
-    // Posición
+    // Posición + flecha de movimiento
     const posCls = idx === 0 ? 'pos-1' : idx === 1 ? 'pos-2' : idx === 2 ? 'pos-3' : '';
-    row.appendChild(el('div', { className: 'wc-ranking-pos ' + posCls },
+    const posCell = el('div', { className: 'wc-ranking-pos ' + posCls },
       idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : String(idx + 1)
-    ));
+    );
+    // Indicador de subida/bajada vs el ranking previo (antes del último cambio)
+    if (hasArrows) {
+      const prev = state.previousRanking[q.id];
+      let mv;
+      if (prev == null) {
+        mv = el('span', { className: 'wc-move new' }, 'NUEVO');
+      } else if (idx < prev) {
+        mv = el('span', { className: 'wc-move up' }, '▲ ' + (prev - idx));
+      } else if (idx > prev) {
+        mv = el('span', { className: 'wc-move down' }, '▼ ' + (idx - prev));
+      } else {
+        mv = el('span', { className: 'wc-move same' }, '=');
+      }
+      posCell.appendChild(mv);
+    }
+    row.appendChild(posCell);
 
     // Nombre y origen
     const nameBlock = el('div', { className: 'wc-ranking-name' },
@@ -1784,7 +1879,7 @@ function buildRanking() {
       el('div', { className: 'wc-ranking-pts-label' }, 'PUNTOS')
     ));
 
-    // Acción
+    // Acción (se oculta al exportar la imagen)
     row.appendChild(el('div', { className: 'wc-ranking-actions' },
       el('button', {
         className: 'wc-btn wc-btn-ghost wc-btn-sm',
@@ -1794,7 +1889,14 @@ function buildRanking() {
 
     list.appendChild(row);
   });
-  container.appendChild(list);
+  capture.appendChild(list);
+
+  // Pie de la imagen (solo visible dentro de la captura)
+  capture.appendChild(el('div', { className: 'wc-capture-foot' },
+    'Quiniela Mundial 2026 · ' + new Date().toLocaleDateString('es-GT', { day: '2-digit', month: 'long', year: 'numeric' })
+  ));
+
+  container.appendChild(capture);
 
   return container;
 }
@@ -2785,6 +2887,13 @@ function handleEnterRealResults() {
     render();
     return;
   }
+  enterRealResultsEditor();
+}
+
+function enterRealResultsEditor() {
+  // Foto del ranking ANTES de editar, para calcular las flechas al guardar
+  state.rankingSnapshot = snapshotRankingPositions();
+  state.snapshotHadResults = countRealMatchesEntered(state.realResults).total > 0;
   if (!state.realResults) state.realResults = emptyPredictions();
   state.view = 'realResults';
   state.activeTab = 'groups';
@@ -2800,12 +2909,10 @@ function submitPassword() {
     const target = m.target;
     state.modal = null;
     if (target === 'realResults') {
-      if (!state.realResults) state.realResults = emptyPredictions();
-      state.view = 'realResults';
-      state.activeTab = 'groups';
-      state.saveStatus = 'idle';
+      enterRealResultsEditor();
+    } else {
+      render();
     }
-    render();
   } else {
     state.modal.error = true;
     state.modal.input = '';
@@ -2817,7 +2924,16 @@ async function handleSaveRealResults() {
   state.saveStatus = 'saving';
   render();
   try {
-    saveStored();
+    // La foto tomada al abrir (ranking antes de estos cambios) pasa a ser la
+    // referencia de las flechas. Solo si ya había resultados antes, para no
+    // mostrar flechas sin sentido la primera vez.
+    if (state.snapshotHadResults && state.rankingSnapshot) {
+      state.previousRanking = state.rankingSnapshot;
+    }
+    saveStored(); // guarda realResults + previousRanking
+    // Nueva foto base por si guarda otra vez en la misma sesión
+    state.rankingSnapshot = snapshotRankingPositions();
+    state.snapshotHadResults = countRealMatchesEntered(state.realResults).total > 0;
     state.saveStatus = 'saved';
     render();
     setTimeout(() => {
@@ -2834,6 +2950,108 @@ async function handleSaveRealResults() {
 function handleRanking() {
   state.view = 'ranking';
   render();
+}
+
+// === Exportar el ranking como imagen JPG (html2canvas) ===
+async function exportRankingImage() {
+  const node = document.getElementById('wc-ranking-capture');
+  if (!node) return;
+  if (!window.html2canvas) {
+    alert('La herramienta de imagen aún se está cargando. Espera unos segundos e intenta de nuevo.');
+    return;
+  }
+  const btn = document.getElementById('wc-export-img-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Generando...'; }
+  node.classList.add('exporting');
+  try {
+    const canvas = await html2canvas(node, {
+      backgroundColor: '#060914',
+      scale: 2,
+      useCORS: true,
+      logging: false
+    });
+    const link = document.createElement('a');
+    link.download = 'ranking-quiniela-' + fileStamp() + '.jpg';
+    link.href = canvas.toDataURL('image/jpeg', 0.95);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  } catch (e) {
+    alert('No se pudo generar la imagen. Intenta de nuevo.');
+  } finally {
+    node.classList.remove('exporting');
+    if (btn) { btn.disabled = false; btn.textContent = '📷 Descargar como imagen'; }
+  }
+}
+
+function fileStamp() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-' + p(d.getHours()) + p(d.getMinutes());
+}
+
+// === Respaldo: exportar todas las quinielas a un archivo JSON ===
+function handleExportBackup() {
+  const data = {
+    app: 'quiniela-mundial-2026',
+    version: 1,
+    exportedAt: Date.now(),
+    own: state.own,
+    imported: state.imported,
+    realResults: state.realResults
+  };
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'respaldo-quinielas-' + fileStamp() + '.json';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+// === Respaldo: restaurar desde un archivo JSON (no sobreescribe lo existente) ===
+function handleRestoreBackup() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'application/json,.json';
+  input.onchange = (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(reader.result);
+        if (!data || data.app !== 'quiniela-mundial-2026') {
+          alert('Ese archivo no es un respaldo válido de la quiniela.');
+          return;
+        }
+        let added = 0;
+        if (data.own) {
+          Object.entries(data.own).forEach(([id, q]) => {
+            if (!state.own[id]) { state.own[id] = q; added++; }
+          });
+        }
+        if (data.imported) {
+          Object.entries(data.imported).forEach(([id, q]) => {
+            if (!state.imported[id]) { state.imported[id] = q; added++; }
+          });
+        }
+        // Solo recupera resultados reales si en este dispositivo no hay ninguno
+        if (data.realResults && !state.realResults) {
+          state.realResults = data.realResults;
+        }
+        saveStored();
+        alert('Respaldo restaurado. Se agregaron ' + added + ' quiniela(s) nueva(s).');
+        render();
+      } catch (err) {
+        alert('No se pudo leer el archivo. ¿Está completo?');
+      }
+    };
+    reader.readAsText(file);
+  };
+  input.click();
 }
 
 function handleShare(id) {
@@ -2900,6 +3118,7 @@ function init() {
   state.own = stored.own;
   state.imported = stored.imported;
   state.realResults = stored.realResults;
+  state.previousRanking = stored.previousRanking || {};
 
   // Si llegan desde un link compartido
   const hashCode = parseUrlHash();
