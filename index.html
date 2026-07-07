@@ -1360,8 +1360,38 @@ function emptyPredictions() {
     QF:  Array(4).fill(null).map(mkKO),
     SF:  Array(2).fill(null).map(mkKO),
     TH:  [mkKO()],
+    FN:  [mkKO()],
+    // Predicciones de eliminatorias sobre el CUADRO REAL oficial (separadas de los
+    // campos R32/R16/... de arriba, que son legado y ya no se usan para esto).
+    koReal: emptyKo()
+  };
+}
+
+function emptyKo() {
+  const mkKO = () => ({ s1: '', s2: '', pen: '' });
+  return {
+    R32: Array(16).fill(null).map(mkKO),
+    R16: Array(8).fill(null).map(mkKO),
+    QF:  Array(4).fill(null).map(mkKO),
+    SF:  Array(2).fill(null).map(mkKO),
+    TH:  [mkKO()],
     FN:  [mkKO()]
   };
+}
+
+// Asegura que una quiniela cargada tenga predictions.koReal con arreglos completos,
+// sin tocar lo demás (las quinielas migradas desde el respaldo no lo traían).
+function ensureKoReal(predictions) {
+  if (!predictions) return predictions;
+  if (!predictions.koReal) predictions.koReal = emptyKo();
+  const ko = predictions.koReal;
+  const need = { R32: 16, R16: 8, QF: 4, SF: 2, TH: 1, FN: 1 };
+  Object.entries(need).forEach(([k, n]) => {
+    if (!Array.isArray(ko[k]) || ko[k].length !== n) {
+      ko[k] = Array(n).fill(null).map(() => ({ s1: '', s2: '', pen: '' }));
+    }
+  });
+  return predictions;
 }
 
 // ============================================================
@@ -1872,8 +1902,13 @@ function buildForm() {
     });
     content.appendChild(grid);
   } else {
-    // Cualquier tab de eliminatorias: calculamos el bracket completo
-    const bracket = computeBracket(quiniela.predictions);
+    // Cualquier tab de eliminatorias: TODOS predicen los mismos partidos del cuadro
+    // real (bracket calculado siempre desde state.realResults + la semilla oficial
+    // de R32). Los marcadores que se editan/muestran son los de esta quiniela sobre
+    // ese cuadro (predictions.koReal), separados del cuadro real en sí.
+    const realSource = isRealResults ? quiniela.predictions : (state.realResults || emptyPredictions());
+    const bracket = computeBracket(realSource, REAL_R32_OFFICIAL);
+    const koStore = isRealResults ? quiniela.predictions : ensureKoReal(quiniela.predictions).koReal;
 
     // Etiquetas placeholder dinámicas para rondas posteriores
     const r16PhA = R16_PAIRS.map(([i]) => 'Ganador R32-' + (i + 1));
@@ -1887,7 +1922,7 @@ function buildForm() {
       content.appendChild(buildThirdsPanel(bracket));
       content.appendChild(buildKnockoutRound(
         'Ronda de 32',
-        bracket.r32, quiniela.predictions.R32,
+        bracket.r32, koStore.R32,
         'Partido',
         R32_LABELS_A, R32_LABELS_B,
         tabReadOnly, false
@@ -1895,7 +1930,7 @@ function buildForm() {
     } else if (state.activeTab === 'R16') {
       content.appendChild(buildKnockoutRound(
         'Octavos de Final',
-        bracket.r16, quiniela.predictions.R16,
+        bracket.r16, koStore.R16,
         'Octavos',
         r16PhA, r16PhB,
         tabReadOnly, false
@@ -1903,7 +1938,7 @@ function buildForm() {
     } else if (state.activeTab === 'QF') {
       content.appendChild(buildKnockoutRound(
         'Cuartos de Final',
-        bracket.qf, quiniela.predictions.QF,
+        bracket.qf, koStore.QF,
         'Cuartos',
         qfPhA, qfPhB,
         tabReadOnly, false
@@ -1911,7 +1946,7 @@ function buildForm() {
     } else if (state.activeTab === 'SF') {
       content.appendChild(buildKnockoutRound(
         'Semifinales',
-        bracket.sf, quiniela.predictions.SF,
+        bracket.sf, koStore.SF,
         'Semifinal',
         sfPhA, sfPhB,
         tabReadOnly, true
@@ -1919,14 +1954,14 @@ function buildForm() {
     } else if (state.activeTab === 'FN') {
       content.appendChild(buildKnockoutRound(
         'Tercer Lugar',
-        bracket.th, quiniela.predictions.TH,
+        bracket.th, koStore.TH,
         'Tercer Lugar',
         ['Perdedor Semifinal 1'], ['Perdedor Semifinal 2'],
         tabReadOnly, false
       ));
       content.appendChild(buildKnockoutRound(
         'Final — 19 Julio 2026, MetLife Stadium',
-        bracket.fn, quiniela.predictions.FN,
+        bracket.fn, koStore.FN,
         'Gran Final',
         ['Ganador Semifinal 1'], ['Ganador Semifinal 2'],
         tabReadOnly, true
@@ -2141,6 +2176,29 @@ const R16_PAIRS = [[1,4],[0,2],[3,5],[6,7],[10,11],[8,9],[13,15],[12,14]];
 const QF_PAIRS  = [[0,1],[4,5],[2,3],[6,7]];
 const SF_PAIRS  = [[0,1],[2,3]];
 
+// Enfrentamientos OFICIALES de la Ronda de 32 (equipos reales que clasificaron).
+// Se usa como "semilla" fija del cuadro para que TODOS los participantes vean
+// exactamente los mismos partidos, en vez de un cuadro derivado de sus propias
+// predicciones de grupos.
+const REAL_R32_OFFICIAL = [
+  { t1: 'Sudáfrica',      t2: 'Canadá' },               // idx0  M73 · 2°A vs 2°B
+  { t1: 'Alemania',       t2: 'Paraguay' },             // idx1  M74 · 1°E vs 3°
+  { t1: 'Países Bajos',   t2: 'Marruecos' },            // idx2  M75 · 1°F vs 2°C
+  { t1: 'Brasil',         t2: 'Japón' },                // idx3  M76 · 1°C vs 2°F
+  { t1: 'Francia',        t2: 'Suecia' },               // idx4  M77 · 1°I vs 3°
+  { t1: 'Costa de Marfil',t2: 'Noruega' },              // idx5  M78 · 2°E vs 2°I
+  { t1: 'México',         t2: 'Ecuador' },              // idx6  M79 · 1°A vs 3°
+  { t1: 'Inglaterra',     t2: 'RD Congo' },             // idx7  M80 · 1°L vs 3°
+  { t1: 'Estados Unidos', t2: 'Bosnia-Herzegovina' },   // idx8  M81 · 1°D vs 3°
+  { t1: 'Bélgica',        t2: 'Senegal' },              // idx9  M82 · 1°G vs 3°
+  { t1: 'Colombia',       t2: 'Ghana' },                // idx10 M83 · 2°K vs 2°L
+  { t1: 'España',         t2: 'Austria' },              // idx11 M84 · 1°H vs 2°J
+  { t1: 'Suiza',          t2: 'Argelia' },              // idx12 M85 · 1°B vs 3°
+  { t1: 'Argentina',      t2: 'Cabo Verde' },           // idx13 M86 · 1°J vs 2°H
+  { t1: 'Portugal',       t2: 'Croacia' },              // idx14 M87 · 1°K vs 3°
+  { t1: 'Australia',      t2: 'Egipto' }                // idx15 M88 · 2°D vs 2°G
+];
+
 function determineWinner(t1, t2, score) {
   if (!t1 || !t2) return null;
   if (score.s1 === '' || score.s2 === '') return null;
@@ -2160,8 +2218,11 @@ function determineLoser(t1, t2, score) {
   return w === t1 ? t2 : t1;
 }
 
-// Calcula todo el bracket basado en las predicciones de grupos + scores de eliminatorias
-function computeBracket(predictions) {
+// Calcula todo el bracket basado en las predicciones de grupos + scores de eliminatorias.
+// Si se pasa realSeedR32, los equipos de la Ronda de 32 se toman de ahí (el cuadro
+// oficial) en vez de calcularse desde los grupos de "predictions" — así el cuadro es
+// el mismo para todos, sin importar de quién sean las predicciones que se pasen.
+function computeBracket(predictions, realSeedR32) {
   // 1. Standings por grupo
   const standings = {};
   let allGroupsComplete = true;
@@ -2206,10 +2267,14 @@ function computeBracket(predictions) {
   const thirdTeamByGroup = {};
   thirds.forEach(t => { thirdTeamByGroup[t.group] = t.team; });
 
-  // 5. R32
+  // 5. R32 — si hay semilla oficial (realSeedR32), se usan esos equipos reales;
+  //    si no, se calculan desde los grupos de estas mismas predicciones.
   const r32 = R32_BLUEPRINT.map((bp, idx) => {
     let t1 = null, t2 = null;
-    if (bp.type === 'RU') {
+    if (realSeedR32 && realSeedR32[idx]) {
+      t1 = realSeedR32[idx].t1 || null;
+      t2 = realSeedR32[idx].t2 || null;
+    } else if (bp.type === 'RU') {
       t1 = RU[bp.a]; t2 = RU[bp.b];
     } else if (bp.type === 'WR') {
       t1 = W[bp.winner]; t2 = RU[bp.ru];
@@ -2324,15 +2389,6 @@ function scoreKnockoutMatch(pred, real, scoring) {
   return { points: 0, status: 'fallo' };
 }
 
-// Busca un partido en la ronda real con los mismos equipos
-function findRealKnockoutMatch(realRoundMatches, t1, t2) {
-  for (const m of realRoundMatches) {
-    if (!m.t1 || !m.t2) continue;
-    if ((m.t1 === t1 && m.t2 === t2) || (m.t1 === t2 && m.t2 === t1)) return m;
-  }
-  return null;
-}
-
 function scoreQuiniela(predictions, realResults) {
   const breakdown = {
     groups: { points: 0, exact: 0, result: 0, scored: 0, total: 72, maxPossible: 72 * SCORING.groups.exact },
@@ -2362,29 +2418,33 @@ function scoreQuiniela(predictions, realResults) {
     });
   }
 
-  // Eliminatorias (comparamos por par de equipos, no por slot)
-  const realBracket = computeBracket(realResults);
-  const predBracket = computeBracket(predictions);
-  const roundKeys = { R32: 'r32', R16: 'r16', QF: 'qf', SF: 'sf', TH: 'th', FN: 'fn' };
+  // Eliminatorias: TODOS predicen los mismos partidos del cuadro real (bracket
+  // único calculado desde realResults + la semilla oficial de R32), así que se
+  // compara posición por posición: koReal[ronda][i] contra el resultado real[ronda][i].
+  if (state.koEnabled) {
+    const realBracket = computeBracket(realResults, REAL_R32_OFFICIAL);
+    const ko = predictions.koReal || emptyKo();
+    const roundKeys = { R32: 'r32', R16: 'r16', QF: 'qf', SF: 'sf', TH: 'th', FN: 'fn' };
 
-  for (const round of ['R32', 'R16', 'QF', 'SF', 'TH', 'FN']) {
-    const predMs = predBracket[roundKeys[round]];
-    const realMs = realBracket[roundKeys[round]];
+    for (const round of ['R32', 'R16', 'QF', 'SF', 'TH', 'FN']) {
+      const realMs = realBracket[roundKeys[round]];
+      const koArr = ko[round] || [];
 
-    predMs.forEach(p => {
-      if (!p.t1 || !p.t2) return; // bracket aún no determinado
-      const real = findRealKnockoutMatch(realMs, p.t1, p.t2);
-      if (!real) return; // los equipos predichos nunca se enfrentaron en esta ronda
-      if (real.s1 === '' || real.s2 === '') return; // sin resultado real aún
-      if (p.s1 === '' || p.s2 === '') return; // sin predicción
+      realMs.forEach((real, i) => {
+        if (!real.t1 || !real.t2) return; // bracket aún no determinado
+        if (real.s1 === '' || real.s2 === '') return; // sin resultado real aún
+        const kp = koArr[i];
+        if (!kp || kp.s1 === '' || kp.s2 === '') return; // sin predicción
 
-      const r = scoreKnockoutMatch(p, real, SCORING[round]);
-      breakdown[round].points += r.points;
-      total += r.points;
-      if (r.status === 'exacto') breakdown[round].exact += 1;
-      if (r.status === 'resultado' || r.status === 'resultado-reg') breakdown[round].result += 1;
-      breakdown[round].scored += 1;
-    });
+        const pred = { t1: real.t1, t2: real.t2, s1: kp.s1, s2: kp.s2, pen: kp.pen };
+        const r = scoreKnockoutMatch(pred, real, SCORING[round]);
+        breakdown[round].points += r.points;
+        total += r.points;
+        if (r.status === 'exacto') breakdown[round].exact += 1;
+        if (r.status === 'resultado' || r.status === 'resultado-reg') breakdown[round].result += 1;
+        breakdown[round].scored += 1;
+      });
+    }
   }
 
   return { total, breakdown, hasResults: true };
