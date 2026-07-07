@@ -7,7 +7,6 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500;600;700&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js" defer></script>
 <style>
 :root {
   --bg: #060914;
@@ -587,26 +586,8 @@ body, html {
   color: var(--text-muted);
   text-align: center;
   letter-spacing: 1px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 3px;
 }
 .wc-ranking-pos.pos-1 { font-size: 32px; }
-.wc-move {
-  font-family: 'Oswald', sans-serif;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.5px;
-  line-height: 1;
-  padding: 2px 5px;
-  border-radius: 3px;
-}
-.wc-move.up   { color: var(--accent-green); background: rgba(46,168,104,0.14); }
-.wc-move.down { color: var(--accent-red);   background: rgba(205,37,51,0.16); }
-.wc-move.same { color: var(--text-dim); font-size: 12px; padding: 0; background: none; }
-.wc-move.new  { color: var(--gold); background: rgba(201,164,76,0.14); font-size: 9px; }
 .wc-ranking-name { min-width: 0; }
 .wc-ranking-participant {
   font-family: 'Oswald', sans-serif;
@@ -667,28 +648,6 @@ body, html {
   text-transform: uppercase;
 }
 .wc-ranking-actions { white-space: nowrap; }
-
-/* Contenedor capturable para exportar el ranking como imagen */
-.wc-capture {
-  background:
-    radial-gradient(ellipse at top, rgba(201,164,76,0.06), transparent 50%),
-    var(--bg);
-  padding: 8px;
-  border-radius: 4px;
-}
-.wc-capture-foot {
-  display: none;
-  margin-top: 18px;
-  text-align: center;
-  font-family: 'Oswald', sans-serif;
-  font-size: 11px;
-  letter-spacing: 2px;
-  text-transform: uppercase;
-  color: var(--text-dim);
-}
-/* Mientras se genera la imagen: ocultar botones de acción y mostrar el pie */
-.wc-capture.exporting .wc-ranking-actions { display: none; }
-.wc-capture.exporting .wc-capture-foot { display: block; }
 @media (max-width: 720px) {
   .wc-ranking-row {
     grid-template-columns: 50px 1fr auto;
@@ -830,6 +789,7 @@ body, html {
 </head>
 <body>
 <div id="root"></div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
 // ============================================================
 // DATOS
@@ -1405,41 +1365,38 @@ function emptyPredictions() {
 }
 
 // ============================================================
-// ALMACENAMIENTO Y SHARING
+// SUPABASE
 // ============================================================
-const STORAGE_KEY = 'wc26_quinielas_v1';
+const SUPABASE_URL = 'https://uhrsgsermorpskcebgtn.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_Yw77KAm9w9QRmzYSEGRe7w_ITOI2BmX';
+const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-function loadStored() {
+// Fase 6: lee/escribe quinielas y config directo en Supabase (nada de localStorage).
+async function loadStored() {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return { own: {}, imported: {}, realResults: null, previousRanking: {} };
-    const parsed = JSON.parse(raw);
+    const [{ data: quinielasData, error: qErr }, { data: configData, error: cErr }] = await Promise.all([
+      supabaseClient.from('quinielas').select('*'),
+      supabaseClient.from('config').select('*').eq('id', 1).single()
+    ]);
+    if (qErr) throw qErr;
+    if (cErr) throw cErr;
     return {
-      own: parsed.own || {},
-      imported: parsed.imported || {},
-      realResults: parsed.realResults || null,
-      previousRanking: parsed.previousRanking || {}
+      quinielas: (quinielasData || []).map(row => ({
+        id: row.id,
+        name: row.name,
+        ownerId: row.owner_id,
+        updatedAt: row.updated_at ? new Date(row.updated_at).getTime() : null,
+        predictions: row.predictions
+      })),
+      realResults: configData ? configData.real_results : null,
+      koRound: configData ? configData.ko_round : null,
+      koEnabled: configData ? !!configData.ko_enabled : false
     };
   } catch (e) {
-    return { own: {}, imported: {}, realResults: null, previousRanking: {} };
+    console.error('Error cargando datos de Supabase:', e);
+    alert('No se pudieron cargar las quinielas desde Supabase.');
+    return { quinielas: [], realResults: null, koRound: null, koEnabled: false };
   }
-}
-
-function saveStored() {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      own: state.own,
-      imported: state.imported,
-      realResults: state.realResults,
-      previousRanking: state.previousRanking
-    }));
-  } catch (e) {
-    alert('No se pudo guardar. Verifica que tu navegador permita el almacenamiento local.');
-  }
-}
-
-function newId() {
-  return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 }
 
 function fmtDate(ts) {
@@ -1448,69 +1405,57 @@ function fmtDate(ts) {
   });
 }
 
-// Codificación segura para URLs (Unicode-safe base64)
-function encodeQuiniela(quiniela) {
-  const payload = { v: 1, q: quiniela };
-  const str = JSON.stringify(payload);
-  const b64 = btoa(unescape(encodeURIComponent(str)));
-  return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-function decodeQuiniela(s) {
-  try {
-    let b = s.replace(/-/g, '+').replace(/_/g, '/');
-    while (b.length % 4) b += '=';
-    const str = decodeURIComponent(escape(atob(b)));
-    const payload = JSON.parse(str);
-    if (payload.v === 1 && payload.q && payload.q.name && payload.q.predictions) {
-      return payload.q;
-    }
-    return null;
-  } catch (e) {
-    return null;
-  }
-}
-
-function buildShareUrl(quiniela) {
-  const code = encodeQuiniela(quiniela);
-  const base = window.location.href.split('#')[0];
-  return base + '#q=' + code;
-}
-
-function parseUrlHash() {
-  const hash = window.location.hash;
-  if (hash.startsWith('#q=')) {
-    return hash.slice(3);
-  }
-  return null;
-}
-
-function clearUrlHash() {
-  history.replaceState(null, '', window.location.pathname + window.location.search);
-}
-
 // ============================================================
 // ESTADO GLOBAL
 // ============================================================
 const state = {
   view: 'home',          // home | edit | read | realResults | ranking
   currentId: null,
-  currentSource: null,   // 'own' | 'imported'
-  tempName: '',
-  own: {},
-  imported: {},
+  currentSource: null,   // legado; sin uso en modo solo-lectura
+  quinielas: [],         // filas de Supabase (antes own + imported)
   realResults: null,     // estructura igual a predictions
-  realAuth: false,       // sesión: ¿ya ingresó la contraseña de admin?
-  previousRanking: {},   // { quinielaId: posiciónPrevia } para las flechas ▲▼
-  rankingSnapshot: null, // foto de posiciones tomada al abrir resultados reales
-  snapshotHadResults: false, // ¿había resultados reales al tomar la foto?
+  koRound: null,         // config.ko_round: ronda activa para participantes
+  koEnabled: false,      // config.ko_enabled
+  user: null,            // usuario de Supabase Auth (o null si no hay sesión)
+  isAdminUser: false,    // ¿el usuario logueado aparece en la tabla admins?
+  myQuinielaId: null,    // id de la quiniela reclamada por el usuario logueado (si no es admin)
   modal: null,           // { type, ... }
   activeTab: 'groups',
-  saveStatus: 'idle',    // idle | saving | saved
-  importInput: ''
+  saveStatus: 'idle'     // idle | saving | saved
 };
 
-const ADMIN_PASSWORD = 'MARLON';
+// Consulta en vivo si el usuario logueado está en la tabla "admins".
+async function isAdmin() {
+  if (!state.user) return false;
+  const { data, error } = await supabaseClient
+    .from('admins')
+    .select('user_id')
+    .eq('user_id', state.user.id)
+    .maybeSingle();
+  return !error && !!data;
+}
+
+// Refresca isAdminUser + myQuinielaId (para el header y los botones de
+// Editar/Reclamar) y re-renderiza.
+async function syncUserContext() {
+  state.isAdminUser = await isAdmin();
+  if (state.user && !state.isAdminUser) {
+    const mine = state.quinielas.find(q => q.ownerId === state.user.id);
+    state.myQuinielaId = mine ? mine.id : null;
+  } else {
+    state.myQuinielaId = null;
+  }
+  render();
+}
+
+supabaseClient.auth.onAuthStateChange((_event, session) => {
+  state.user = session ? session.user : null;
+  if (!state.user) { state.isAdminUser = false; state.myQuinielaId = null; }
+  if (state.modal && state.modal.type === 'login' && session) {
+    state.modal = null;
+  }
+  syncUserContext();
+});
 
 function render() {
   const root = document.getElementById('root');
@@ -1580,25 +1525,35 @@ function buildHeader() {
           el('div', { className: 'wc-subtitle' }, 'Quiniela Oficial')
         )
       ),
-      el('div', { className: 'wc-hosts' },
-        el('span', {}, '🇨🇦'), el('span', {}, '🇲🇽'), el('span', {}, '🇺🇸')
+      el('div', { style: { display: 'flex', alignItems: 'center', gap: '16px' } },
+        el('div', { className: 'wc-hosts' },
+          el('span', {}, '🇨🇦'), el('span', {}, '🇲🇽'), el('span', {}, '🇺🇸')
+        ),
+        buildAuthWidget()
       )
     )
   );
 }
 
+function buildAuthWidget() {
+  if (!state.user) {
+    return el('button', { className: 'wc-btn wc-btn-ghost wc-btn-sm', onClick: handleOpenLogin }, 'Iniciar sesión');
+  }
+  return el('div', { style: { display: 'flex', alignItems: 'center', gap: '8px' } },
+    state.isAdminUser ? el('span', { className: 'wc-quin-badge' }, 'Admin') : null,
+    el('span', { style: { fontSize: '12px', color: 'var(--text-dim)' } }, state.user.email),
+    el('button', { className: 'wc-btn wc-btn-ghost wc-btn-sm', onClick: handleSignOut }, 'Salir')
+  );
+}
+
 function buildFooter() {
   return el('div', { className: 'wc-footer' },
-    'Quiniela compartida — Envía tu link para que otros vean tu quiniela. Tus datos se guardan en este dispositivo.'
+    'Quiniela compartida — todos ven las mismas 11 quinielas desde la base de datos. Inicia sesión con tu correo para reclamar y editar la tuya.'
   );
 }
 
 function buildHome() {
-  const ownList = Object.entries(state.own)
-    .map(([id, q]) => ({ id, ...q, source: 'own' }))
-    .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
-  const importedList = Object.entries(state.imported)
-    .map(([id, q]) => ({ id, ...q, source: 'imported' }))
+  const quinielasList = [...state.quinielas]
     .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
 
   return el('div', { className: 'wc-container' },
@@ -1613,9 +1568,8 @@ function buildHome() {
 
     el('div', { className: 'wc-info' },
       el('strong', {}, 'Cómo funciona: '),
-      'Crea tu quiniela aquí. Al guardarla, obtienes un link que puedes enviar por WhatsApp/Slack. ' +
-      'Quien lo abra verá tu quiniela y podrá hacer la suya. ' +
-      'Las quinielas se guardan en este navegador (este dispositivo).'
+      'Las quinielas se cargan desde la base de datos compartida. ' +
+      '(Crear, editar e importar tu propia quiniela llega en el siguiente paso.)'
     ),
 
     // Sistema de puntos y ranking
@@ -1627,7 +1581,7 @@ function buildHome() {
             ? 'Ya hay ' + countRealMatchesEntered(state.realResults).total + ' partidos con resultado real. Mira quién va ganando.'
             : 'Cuando ingreses los resultados reales del torneo, todas las quinielas se rankean automáticamente.'
         ),
-        el('button', { className: 'wc-btn', onClick: handleRanking, disabled: Object.keys(state.own).length + Object.keys(state.imported).length === 0 ? 'disabled' : null },
+        el('button', { className: 'wc-btn', onClick: handleRanking, disabled: state.quinielas.length === 0 ? 'disabled' : null },
           'Ver ranking →'
         )
       ),
@@ -1636,7 +1590,7 @@ function buildHome() {
         el('div', { style: { fontSize: '13px', color: 'var(--text-dim)', marginBottom: '14px', lineHeight: '1.5' } },
           'Ingresa los marcadores reales del Mundial conforme se vayan jugando los partidos. ' +
           'Esto puntúa todas las quinielas en el ranking. ',
-          el('strong', { style: { color: 'var(--text-muted)' } }, 'Solo el administrador (con contraseña).')
+          el('strong', { style: { color: 'var(--text-muted)' } }, 'Solo administradores autorizados (inicia sesión con tu correo).')
         ),
         el('button', { className: 'wc-btn wc-btn-secondary', onClick: handleEnterRealResults },
           state.realResults ? 'Editar resultados reales' : 'Ingresar resultados reales →'
@@ -1644,147 +1598,70 @@ function buildHome() {
       )
     ),
 
-    // Herramientas de administrador (respaldo)
-    el('div', { className: 'wc-card', style: { borderLeft: '3px solid var(--border-strong)' } },
-      el('div', { className: 'wc-card-title' }, '🛠️ Herramientas de administrador'),
-      el('div', { style: { fontSize: '13px', color: 'var(--text-dim)', marginBottom: '14px', lineHeight: '1.5' } },
-        'Descarga un respaldo de todas las quinielas guardadas en este dispositivo (propias e importadas) en un archivo. ' +
-        'Guárdalo en lugar seguro: te sirve si cambias de navegador o antes de una actualización. ' +
-        'Restaurar agrega las quinielas del archivo sin borrar las que ya tienes.'
-      ),
-      el('div', { style: { display: 'flex', gap: '10px', flexWrap: 'wrap' } },
-        el('button', { className: 'wc-btn wc-btn-secondary wc-btn-sm', onClick: handleExportBackup }, '⬇ Exportar respaldo (.json)'),
-        el('button', { className: 'wc-btn wc-btn-ghost wc-btn-sm', onClick: handleRestoreBackup }, '⬆ Restaurar respaldo')
-      )
-    ),
-
-    el('div', { className: 'wc-grid-2' },
-      // Crear nueva
-      el('div', { className: 'wc-card' },
-        el('div', { className: 'wc-card-title' }, 'Nueva Quiniela'),
-        el('label', { className: 'wc-label' }, 'Nombre del participante'),
-        el('input', {
-          className: 'wc-input',
-          placeholder: 'Ej. Marlon',
-          value: state.tempName,
-          maxlength: '40',
-          onInput: (e) => { state.tempName = e.target.value; },
-          onKeydown: (e) => { if (e.key === 'Enter') handleCreate(); }
-        }),
-        el('div', { style: { height: '18px' } }),
-        el('button', { className: 'wc-btn', onClick: handleCreate }, 'Crear mi quiniela →')
-      ),
-
-      // Importar
-      el('div', { className: 'wc-card' },
-        el('div', { className: 'wc-card-title' }, 'Importar quiniela de otro'),
-        el('label', { className: 'wc-label' }, 'Pega un link o código compartido'),
-        el('textarea', {
-          className: 'wc-textarea',
-          placeholder: 'Pega aquí el link que te enviaron...',
-          value: state.importInput,
-          onInput: (e) => { state.importInput = e.target.value; }
-        }),
-        el('div', { style: { height: '14px' } }),
-        el('button', { className: 'wc-btn wc-btn-secondary', onClick: handleImport }, 'Importar')
-      )
-    ),
-
-    // Mis quinielas
-    el('h2', { className: 'wc-section-title' }, 'Mis Quinielas (' + ownList.length + ')'),
-    ownList.length === 0
-      ? el('div', { className: 'wc-empty' }, 'Aún no has creado ninguna quiniela.')
+    // Quinielas
+    el('h2', { className: 'wc-section-title' }, 'Quinielas (' + quinielasList.length + ')'),
+    quinielasList.length === 0
+      ? el('div', { className: 'wc-empty' }, 'Aún no hay quinielas cargadas.')
       : el('div', { className: 'wc-quin-list' },
-          ownList.map(q => buildQuinielaItem(q))
-        ),
-
-    // Quinielas importadas
-    el('h2', { className: 'wc-section-title' }, 'Quinielas de Otros (' + importedList.length + ')'),
-    importedList.length === 0
-      ? el('div', { className: 'wc-empty' }, 'Aún no has importado ninguna quiniela. Pídele su link a los demás participantes.')
-      : el('div', { className: 'wc-quin-list' },
-          importedList.map(q => buildQuinielaItem(q))
+          quinielasList.map(q => buildQuinielaItem(q))
         )
   );
 }
 
 function buildQuinielaItem(q) {
-  const isOwn = q.source === 'own';
-  return el('div', { className: 'wc-quin-item' + (isOwn ? '' : ' imported') },
+  const isMine = q.id === state.myQuinielaId;
+  const canEdit = state.isAdminUser || isMine;
+  const canClaim = state.user && !state.isAdminUser && !state.myQuinielaId && !q.ownerId;
+
+  return el('div', { className: 'wc-quin-item' },
     el('div', {},
       el('div', { className: 'wc-quin-name' },
         q.name,
-        !isOwn ? el('span', { className: 'wc-quin-badge' }, 'Importada') : null
+        isMine ? el('span', { className: 'wc-quin-badge' }, 'Tuya') : null
       ),
       el('div', { className: 'wc-quin-date' }, 'Actualizada ' + fmtDate(q.updatedAt))
     ),
     el('div', { className: 'wc-quin-actions' },
       el('button', {
         className: 'wc-btn wc-btn-ghost wc-btn-sm',
-        onClick: () => handleView(q.id, q.source)
+        onClick: () => handleView(q.id)
       }, 'Ver'),
-      isOwn ? el('button', {
+      canEdit ? el('button', {
         className: 'wc-btn wc-btn-secondary wc-btn-sm',
         onClick: () => handleEdit(q.id)
       }, 'Editar') : null,
-      isOwn ? el('button', {
+      canClaim ? el('button', {
         className: 'wc-btn wc-btn-secondary wc-btn-sm',
-        onClick: () => handleShare(q.id)
-      }, 'Compartir') : null,
-      el('button', {
-        className: 'wc-btn wc-btn-danger wc-btn-sm',
-        onClick: () => handleDelete(q.id, q.source)
-      }, '✕')
+        onClick: () => handleClaim(q.id)
+      }, 'Reclamar') : null
     )
   );
 }
 
-// Devuelve todas las quinielas con su puntaje, ya ordenadas (mismo criterio del ranking)
-function computeRanking() {
-  const all = [
-    ...Object.entries(state.own).map(([id, q]) => ({ id, ...q, source: 'own' })),
-    ...Object.entries(state.imported).map(([id, q]) => ({ id, ...q, source: 'imported' }))
-  ];
-  const scored = all.map(q => ({ ...q, score: scoreQuiniela(q.predictions, state.realResults) }));
+function buildRanking() {
+  // Fase 6: las quinielas ya vienen unificadas desde Supabase.
+  const all = state.quinielas;
+
+  // Calcular puntos
+  const scored = all.map(q => {
+    const result = scoreQuiniela(q.predictions, state.realResults);
+    return { ...q, score: result };
+  });
+
+  // Ordenar por puntos descendente, luego por exactos descendente
   scored.sort((a, b) => {
     if (b.score.total !== a.score.total) return b.score.total - a.score.total;
     const aExact = a.score.breakdown ? Object.values(a.score.breakdown).reduce((s, x) => s + x.exact, 0) : 0;
     const bExact = b.score.breakdown ? Object.values(b.score.breakdown).reduce((s, x) => s + x.exact, 0) : 0;
     return bExact - aExact;
   });
-  return scored;
-}
-
-// Foto { quinielaId: posición } del ranking actual (según los resultados reales guardados)
-function snapshotRankingPositions() {
-  const pos = {};
-  computeRanking().forEach((q, idx) => { pos[q.id] = idx; });
-  return pos;
-}
-
-function buildRanking() {
-  // Reunir todas las quinielas (propias e importadas) y calcular puntos
-  const scored = computeRanking();
 
   const realCount = countRealMatchesEntered(state.realResults);
-  const hasArrows = state.previousRanking && Object.keys(state.previousRanking).length > 0;
 
   const container = el('div', { className: 'wc-container' });
+  container.appendChild(el('button', { className: 'wc-back-link', onClick: handleBack }, '← Volver'));
 
-  // Barra superior (no se incluye en la imagen)
-  container.appendChild(el('div', {
-    style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px', marginBottom: '8px' }
-  },
-    el('button', { className: 'wc-back-link', style: { marginBottom: '0' }, onClick: handleBack }, '← Volver'),
-    scored.length > 0
-      ? el('button', { className: 'wc-btn wc-btn-secondary wc-btn-sm', id: 'wc-export-img-btn', onClick: exportRankingImage }, '📷 Descargar como imagen')
-      : null
-  ));
-
-  // === Bloque capturable para la imagen JPG ===
-  const capture = el('div', { id: 'wc-ranking-capture', className: 'wc-capture' });
-
-  capture.appendChild(el('div', { className: 'wc-hero' },
+  container.appendChild(el('div', { className: 'wc-hero' },
     el('div', { className: 'wc-hero-eyebrow' }, 'Ranking Mundial 2026'),
     el('h1', { className: 'wc-hero-title' }, '🏆 Ranking'),
     el('div', { className: 'wc-hero-rule' }),
@@ -1792,11 +1669,12 @@ function buildRanking() {
       state.realResults
         ? 'Basado en ' + realCount.total + ' partidos con resultado real ingresado ' +
           '(' + realCount.groups + ' de grupos · ' + realCount.ko + ' eliminatorias).'
-        : 'Aún no se han ingresado resultados reales. Ingrésalos para que aparezcan los puntos.'
+        : 'Aún no has ingresado ningún resultado real. Ingrésalos para que aparezcan los puntos.'
     )
   ));
 
-  capture.appendChild(el('div', { className: 'wc-info' },
+  // Tabla de sistema de puntos (info)
+  container.appendChild(el('div', { className: 'wc-info' },
     el('strong', {}, 'Sistema de puntos: '),
     'Grupos 1/3 · R32 y Octavos 2/5 · Cuartos 4/8 · Semis y 3er Lugar 5/10 · Final 8/15 ',
     el('span', { style: { color: 'var(--text-dim)', fontStyle: 'italic' } },
@@ -1805,10 +1683,9 @@ function buildRanking() {
   ));
 
   if (scored.length === 0) {
-    capture.appendChild(el('div', { className: 'wc-empty' },
+    container.appendChild(el('div', { className: 'wc-empty' },
       'No hay quinielas creadas o importadas todavía.'
     ));
-    container.appendChild(capture);
     return container;
   }
 
@@ -1818,34 +1695,15 @@ function buildRanking() {
     const isLeader = idx === 0 && q.score.total > 0;
     const row = el('div', { className: 'wc-ranking-row' + (isLeader ? ' leader' : '') });
 
-    // Posición + flecha de movimiento
+    // Posición
     const posCls = idx === 0 ? 'pos-1' : idx === 1 ? 'pos-2' : idx === 2 ? 'pos-3' : '';
-    const posCell = el('div', { className: 'wc-ranking-pos ' + posCls },
+    row.appendChild(el('div', { className: 'wc-ranking-pos ' + posCls },
       idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : String(idx + 1)
-    );
-    // Indicador de subida/bajada vs el ranking previo (antes del último cambio)
-    if (hasArrows) {
-      const prev = state.previousRanking[q.id];
-      let mv;
-      if (prev == null) {
-        mv = el('span', { className: 'wc-move new' }, 'NUEVO');
-      } else if (idx < prev) {
-        mv = el('span', { className: 'wc-move up' }, '▲ ' + (prev - idx));
-      } else if (idx > prev) {
-        mv = el('span', { className: 'wc-move down' }, '▼ ' + (idx - prev));
-      } else {
-        mv = el('span', { className: 'wc-move same' }, '=');
-      }
-      posCell.appendChild(mv);
-    }
-    row.appendChild(posCell);
+    ));
 
     // Nombre y origen
     const nameBlock = el('div', { className: 'wc-ranking-name' },
-      el('div', { className: 'wc-ranking-participant' }, q.name),
-      el('div', { className: 'wc-ranking-meta' },
-        q.source === 'own' ? 'Tu quiniela' : 'Importada'
-      )
+      el('div', { className: 'wc-ranking-participant' }, q.name)
     );
     row.appendChild(nameBlock);
 
@@ -1879,26 +1737,45 @@ function buildRanking() {
       el('div', { className: 'wc-ranking-pts-label' }, 'PUNTOS')
     ));
 
-    // Acción (se oculta al exportar la imagen)
+    // Acción
     row.appendChild(el('div', { className: 'wc-ranking-actions' },
       el('button', {
         className: 'wc-btn wc-btn-ghost wc-btn-sm',
-        onClick: () => handleView(q.id, q.source)
+        onClick: () => handleView(q.id)
       }, 'Ver')
     ));
 
     list.appendChild(row);
   });
-  capture.appendChild(list);
-
-  // Pie de la imagen (solo visible dentro de la captura)
-  capture.appendChild(el('div', { className: 'wc-capture-foot' },
-    'Quiniela Mundial 2026 · ' + new Date().toLocaleDateString('es-GT', { day: '2-digit', month: 'long', year: 'numeric' })
-  ));
-
-  container.appendChild(capture);
+  container.appendChild(list);
 
   return container;
+}
+
+// Fase 6 (paso 3): ronda activa para participantes.
+// El "Tercer Lugar" vive en la misma pestaña que la Final, así que para
+// efectos de ronda activa/bloqueo se tratan como una sola etapa 'FN'.
+const KO_ROUND_ORDER = ['R32', 'R16', 'QF', 'SF', 'FN'];
+
+function nextKoRound(current) {
+  const idx = KO_ROUND_ORDER.indexOf(current);
+  if (idx === -1 || idx === KO_ROUND_ORDER.length - 1) return null;
+  return KO_ROUND_ORDER[idx + 1];
+}
+
+function activeParticipantRound() {
+  return state.koEnabled ? state.koRound : 'groups';
+}
+
+// Admin puede editar cualquier ronda de cualquier quiniela.
+// Un participante solo puede editar la ronda activa de SU quiniela reclamada,
+// y solo si no la ha enviado ya (predictions.lockedRounds).
+function isRoundEditable(quiniela, tabId) {
+  if (state.isAdminUser) return true;
+  if (!quiniela || !state.myQuinielaId || quiniela.id !== state.myQuinielaId) return false;
+  if (tabId !== activeParticipantRound()) return false;
+  const locked = (quiniela.predictions && quiniela.predictions.lockedRounds) || [];
+  return !locked.includes(tabId);
 }
 
 function buildForm() {
@@ -1917,6 +1794,10 @@ function buildForm() {
     }
   }
   const readOnly = state.view === 'read';
+  // tabReadOnly: además de "solo lectura" a nivel vista, aplica el bloqueo
+  // por ronda activa para participantes (el admin siempre puede editar todo).
+  const tabReadOnly = isRealResults ? readOnly : (readOnly || !isRoundEditable(quiniela, state.activeTab));
+  const isMine = !isRealResults && state.myQuinielaId && quiniela.id === state.myQuinielaId;
 
   const tabs = [
     { id: 'groups', label: 'Fase de Grupos' },
@@ -1982,12 +1863,12 @@ function buildForm() {
   container.appendChild(tabsEl);
 
   // Contenido por tab
-  const content = el('div', { style: readOnly ? { pointerEvents: 'none', opacity: '0.85' } : {} });
+  const content = el('div', { style: tabReadOnly ? { pointerEvents: 'none', opacity: '0.85' } : {} });
 
   if (state.activeTab === 'groups') {
     const grid = el('div', { className: 'wc-group-grid' });
     Object.entries(GROUPS).forEach(([letter, teams]) => {
-      grid.appendChild(buildGroupCard(letter, teams, quiniela.predictions.groups[letter], readOnly));
+      grid.appendChild(buildGroupCard(letter, teams, quiniela.predictions.groups[letter], tabReadOnly));
     });
     content.appendChild(grid);
   } else {
@@ -2009,7 +1890,7 @@ function buildForm() {
         bracket.r32, quiniela.predictions.R32,
         'Partido',
         R32_LABELS_A, R32_LABELS_B,
-        readOnly, false
+        tabReadOnly, false
       ));
     } else if (state.activeTab === 'R16') {
       content.appendChild(buildKnockoutRound(
@@ -2017,7 +1898,7 @@ function buildForm() {
         bracket.r16, quiniela.predictions.R16,
         'Octavos',
         r16PhA, r16PhB,
-        readOnly, false
+        tabReadOnly, false
       ));
     } else if (state.activeTab === 'QF') {
       content.appendChild(buildKnockoutRound(
@@ -2025,7 +1906,7 @@ function buildForm() {
         bracket.qf, quiniela.predictions.QF,
         'Cuartos',
         qfPhA, qfPhB,
-        readOnly, false
+        tabReadOnly, false
       ));
     } else if (state.activeTab === 'SF') {
       content.appendChild(buildKnockoutRound(
@@ -2033,7 +1914,7 @@ function buildForm() {
         bracket.sf, quiniela.predictions.SF,
         'Semifinal',
         sfPhA, sfPhB,
-        readOnly, true
+        tabReadOnly, true
       ));
     } else if (state.activeTab === 'FN') {
       content.appendChild(buildKnockoutRound(
@@ -2041,14 +1922,14 @@ function buildForm() {
         bracket.th, quiniela.predictions.TH,
         'Tercer Lugar',
         ['Perdedor Semifinal 1'], ['Perdedor Semifinal 2'],
-        readOnly, false
+        tabReadOnly, false
       ));
       content.appendChild(buildKnockoutRound(
         'Final — 19 Julio 2026, MetLife Stadium',
         bracket.fn, quiniela.predictions.FN,
         'Gran Final',
         ['Ganador Semifinal 1'], ['Ganador Semifinal 2'],
-        readOnly, true
+        tabReadOnly, true
       ));
     }
   }
@@ -2056,24 +1937,44 @@ function buildForm() {
 
   // Save bar
   if (isRealResults) {
-    const saveBar = el('div', { className: 'wc-save-bar' },
+    const next = state.koEnabled ? nextKoRound(state.koRound) : 'R32';
+    const roundLabel = (id) => (tabs.find(t => t.id === id) || {}).label || id;
+    const saveBar = el('div', { className: 'wc-save-bar', style: { flexWrap: 'wrap' } },
       el('span', { className: 'wc-save-status' + (state.saveStatus === 'saved' ? ' saved' : '') },
         state.saveStatus === 'saving' ? 'Guardando...' :
-        state.saveStatus === 'saved' ? '✓ Guardado' : 'Recuerda guardar los resultados'
+        state.saveStatus === 'saved' ? '✓ Guardado' :
+        'Ronda activa para participantes: ' + roundLabel(activeParticipantRound())
       ),
+      next ? el('button', {
+        className: 'wc-btn wc-btn-secondary',
+        onClick: handleAdvanceRound,
+        disabled: state.saveStatus === 'saving' ? 'disabled' : null
+      }, 'Avanzar a ' + roundLabel(next) + ' →') : null,
       el('button', { className: 'wc-btn', onClick: handleSaveRealResults, disabled: state.saveStatus === 'saving' },
         state.saveStatus === 'saving' ? 'Guardando...' : 'Guardar Resultados'
       )
     );
     container.appendChild(saveBar);
-  } else if (!readOnly) {
+  } else if (!readOnly && isMine && !state.isAdminUser) {
+    const editable = isRoundEditable(quiniela, state.activeTab);
     const saveBar = el('div', { className: 'wc-save-bar' },
       el('span', { className: 'wc-save-status' + (state.saveStatus === 'saved' ? ' saved' : '') },
         state.saveStatus === 'saving' ? 'Guardando...' :
-        state.saveStatus === 'saved' ? '✓ Guardado' : 'Recuerda guardar tus cambios'
+        state.saveStatus === 'saved' ? '✓ Guardado' :
+        editable ? 'Recuerda enviar esta ronda' : 'Esta pestaña no es tu ronda activa o ya la enviaste'
       ),
-      el('button', { className: 'wc-btn wc-btn-secondary', onClick: () => handleShare(state.currentId) }, 'Compartir link'),
-      el('button', { className: 'wc-btn', onClick: handleSave, disabled: state.saveStatus === 'saving' },
+      editable ? el('button', { className: 'wc-btn', onClick: handleParticipantSaveRound, disabled: state.saveStatus === 'saving' },
+        state.saveStatus === 'saving' ? 'Enviando...' : 'Enviar esta ronda'
+      ) : null
+    );
+    container.appendChild(saveBar);
+  } else if (!readOnly && state.isAdminUser) {
+    const saveBar = el('div', { className: 'wc-save-bar' },
+      el('span', { className: 'wc-save-status' + (state.saveStatus === 'saved' ? ' saved' : '') },
+        state.saveStatus === 'saving' ? 'Guardando...' :
+        state.saveStatus === 'saved' ? '✓ Guardado' : 'Editando como administrador (sin restricción de ronda)'
+      ),
+      el('button', { className: 'wc-btn', onClick: handleAdminSaveQuiniela, disabled: state.saveStatus === 'saving' },
         state.saveStatus === 'saving' ? 'Guardando...' : 'Guardar Quiniela'
       )
     );
@@ -2698,105 +2599,37 @@ function buildModal() {
   if (!state.modal) return null;
   const m = state.modal;
 
-  if (m.type === 'password') {
+  if (m.type === 'login') {
     return el('div', { className: 'wc-modal-backdrop', onClick: (e) => { if (e.target.className === 'wc-modal-backdrop') closeModal(); } },
       el('div', { className: 'wc-modal' },
-        el('div', { className: 'wc-modal-title' }, '🔒 Acceso restringido'),
-        el('div', { className: 'wc-modal-text' },
-          'Los resultados reales solo los puede ingresar el administrador. Escribe la contraseña para continuar.'
-        ),
-        el('input', {
-          className: 'wc-input',
-          type: 'password',
-          placeholder: 'Contraseña',
-          value: m.input,
-          autofocus: 'autofocus',
-          onInput: (e) => { state.modal.input = e.target.value; state.modal.error = false; },
-          onKeydown: (e) => { if (e.key === 'Enter') submitPassword(); }
-        }),
-        m.error ? el('div', { style: { color: 'var(--accent-red)', fontSize: '12px', marginTop: '8px' } }, 'Contraseña incorrecta. Intenta de nuevo.') : null,
+        el('div', { className: 'wc-modal-title' }, '✉️ Iniciar sesión'),
+        m.status === 'sent'
+          ? el('div', { className: 'wc-modal-text' },
+              'Te enviamos un link a ', el('strong', { style: { color: 'var(--gold)' } }, m.email),
+              '. Ábrelo desde este mismo navegador para entrar.'
+            )
+          : el('div', {},
+              el('div', { className: 'wc-modal-text' },
+                'Ingresa tu correo y te enviamos un link para entrar (sin contraseña).'
+              ),
+              el('input', {
+                className: 'wc-input',
+                type: 'email',
+                placeholder: 'tucorreo@ejemplo.com',
+                value: m.email,
+                autofocus: 'autofocus',
+                onInput: (e) => { state.modal.email = e.target.value; state.modal.error = null; },
+                onKeydown: (e) => { if (e.key === 'Enter') handleSendMagicLink(); }
+              }),
+              m.error ? el('div', { style: { color: 'var(--accent-red)', fontSize: '12px', marginTop: '8px' } }, m.error) : null
+            ),
         el('div', { className: 'wc-modal-actions', style: { marginTop: '18px' } },
-          el('button', { className: 'wc-btn wc-btn-ghost', onClick: closeModal }, 'Cancelar'),
-          el('button', { className: 'wc-btn', onClick: submitPassword }, 'Entrar')
-        )
-      )
-    );
-  }
-
-  if (m.type === 'share') {
-    const url = m.url;
-    return el('div', { className: 'wc-modal-backdrop', onClick: (e) => { if (e.target.className === 'wc-modal-backdrop') closeModal(); } },
-      el('div', { className: 'wc-modal' },
-        el('div', { className: 'wc-modal-title' }, 'Compartir Quiniela'),
-        el('div', { className: 'wc-modal-text' },
-          'Envía este link a los demás participantes. Cuando lo abran, verán tu quiniela y podrán importarla.'
-        ),
-        el('div', { className: 'wc-link-box' }, url),
-        el('div', { className: 'wc-modal-actions' },
-          el('button', { className: 'wc-btn wc-btn-ghost', onClick: closeModal }, 'Cerrar'),
-          el('button', {
+          el('button', { className: 'wc-btn wc-btn-ghost', onClick: closeModal }, m.status === 'sent' ? 'Cerrar' : 'Cancelar'),
+          m.status === 'sent' ? null : el('button', {
             className: 'wc-btn',
-            onClick: async () => {
-              try {
-                await navigator.clipboard.writeText(url);
-                alert('¡Link copiado!');
-              } catch (e) {
-                alert('No se pudo copiar. Selecciona el link manualmente.');
-              }
-            }
-          }, 'Copiar Link')
-        )
-      )
-    );
-  }
-
-  if (m.type === 'import-confirm') {
-    const q = m.quiniela;
-    return el('div', { className: 'wc-modal-backdrop' },
-      el('div', { className: 'wc-modal' },
-        el('div', { className: 'wc-modal-title' }, 'Importar Quiniela'),
-        el('div', { className: 'wc-modal-text' },
-          'Has recibido la quiniela de ',
-          el('strong', { style: { color: 'var(--gold)' } }, q.name),
-          '. ¿Quieres guardarla en tu lista para verla cuando quieras?'
-        ),
-        el('div', { className: 'wc-modal-actions' },
-          el('button', { className: 'wc-btn wc-btn-ghost', onClick: () => { closeModal(); clearUrlHash(); } }, 'Solo ver'),
-          el('button', {
-            className: 'wc-btn',
-            onClick: () => {
-              const id = newId();
-              state.imported[id] = q;
-              saveStored();
-              closeModal();
-              clearUrlHash();
-              state.currentId = id;
-              state.currentSource = 'imported';
-              state.view = 'read';
-              render();
-            }
-          }, 'Importar y Ver')
-        )
-      )
-    );
-  }
-
-  if (m.type === 'confirm-delete') {
-    return el('div', { className: 'wc-modal-backdrop' },
-      el('div', { className: 'wc-modal' },
-        el('div', { className: 'wc-modal-title' }, 'Eliminar quiniela'),
-        el('div', { className: 'wc-modal-text' }, '¿Seguro que deseas eliminar la quiniela de ' + m.name + '? Esta acción no se puede deshacer.'),
-        el('div', { className: 'wc-modal-actions' },
-          el('button', { className: 'wc-btn wc-btn-ghost', onClick: closeModal }, 'Cancelar'),
-          el('button', {
-            className: 'wc-btn wc-btn-danger',
-            onClick: () => {
-              if (m.source === 'own') delete state.own[m.id];
-              else delete state.imported[m.id];
-              saveStored();
-              closeModal();
-            }
-          }, 'Eliminar')
+            onClick: handleSendMagicLink,
+            disabled: m.status === 'sending' ? 'disabled' : null
+          }, m.status === 'sending' ? 'Enviando...' : 'Enviar link mágico')
         )
       )
     );
@@ -2810,44 +2643,50 @@ function buildModal() {
 // ============================================================
 function getCurrentQuiniela() {
   if (!state.currentId) return null;
-  if (state.currentSource === 'own') return state.own[state.currentId];
-  if (state.currentSource === 'imported') return state.imported[state.currentId];
-  return null;
-}
-
-function handleCreate() {
-  const name = state.tempName.trim();
-  if (!name) { alert('Ingresa tu nombre para crear tu quiniela.'); return; }
-  if (name.length > 40) { alert('Máximo 40 caracteres.'); return; }
-
-  const id = newId();
-  const ts = Date.now();
-  state.own[id] = {
-    name: name,
-    createdAt: ts,
-    updatedAt: ts,
-    predictions: emptyPredictions()
-  };
-  state.tempName = '';
-  saveStored();
-  state.currentId = id;
-  state.currentSource = 'own';
-  state.view = 'edit';
-  state.activeTab = 'groups';
-  render();
+  return state.quinielas.find(q => q.id === state.currentId) || null;
 }
 
 function handleEdit(id) {
+  const q = state.quinielas.find(x => x.id === id);
+  if (!q) return;
+  if (!state.isAdminUser && q.id !== state.myQuinielaId) {
+    alert('No puedes editar esta quiniela.');
+    return;
+  }
   state.currentId = id;
-  state.currentSource = 'own';
+  state.currentSource = 'quinielas';
   state.view = 'edit';
-  state.activeTab = 'groups';
+  state.activeTab = state.isAdminUser ? 'groups' : activeParticipantRound();
   render();
 }
 
-function handleView(id, source) {
+async function handleClaim(id) {
+  if (!state.user) { handleOpenLogin(); return; }
+  if (state.isAdminUser) return;
+  if (state.myQuinielaId) { alert('Ya reclamaste una quiniela.'); return; }
+  const q = state.quinielas.find(x => x.id === id);
+  if (!q || !confirm('¿Confirmas que "' + q.name + '" eres tú? Quedará vinculada a tu correo (' + state.user.email + ').')) return;
+
+  const { data, error } = await supabaseClient
+    .from('quinielas')
+    .update({ owner_id: state.user.id })
+    .eq('id', id)
+    .is('owner_id', null)
+    .select()
+    .maybeSingle();
+
+  if (error || !data) {
+    alert('No se pudo reclamar (puede que alguien más ya la haya tomado). Recarga la página e intenta de nuevo.');
+    return;
+  }
+  q.ownerId = state.user.id;
+  state.myQuinielaId = id;
+  render();
+}
+
+function handleView(id) {
   state.currentId = id;
-  state.currentSource = source;
+  state.currentSource = 'quinielas';
   state.view = 'read';
   state.activeTab = 'groups';
   render();
@@ -2861,39 +2700,106 @@ function handleBack() {
   render();
 }
 
-async function handleSave() {
-  if (!state.currentId || state.currentSource !== 'own') return;
+// Participante: envía y bloquea SU ronda activa en SU quiniela reclamada.
+async function handleParticipantSaveRound() {
+  if (state.isAdminUser) return;
+  const quiniela = getCurrentQuiniela();
+  if (!quiniela || quiniela.id !== state.myQuinielaId) return;
+  const round = activeParticipantRound();
+  if (!isRoundEditable(quiniela, round)) return;
+
   state.saveStatus = 'saving';
   render();
-  try {
-    state.own[state.currentId].updatedAt = Date.now();
-    saveStored();
-    state.saveStatus = 'saved';
-    render();
-    setTimeout(() => {
-      state.saveStatus = 'idle';
-      render();
-    }, 2500);
-  } catch (e) {
-    state.saveStatus = 'idle';
-    alert('Error al guardar.');
-    render();
-  }
-}
 
-function handleEnterRealResults() {
-  if (!state.realAuth) {
-    state.modal = { type: 'password', target: 'realResults', input: '', error: false };
+  const locked = new Set(quiniela.predictions.lockedRounds || []);
+  locked.add(round);
+  const newPredictions = { ...quiniela.predictions, lockedRounds: [...locked] };
+
+  const { error } = await supabaseClient
+    .from('quinielas')
+    .update({ predictions: newPredictions, updated_at: new Date().toISOString() })
+    .eq('id', quiniela.id);
+
+  if (error) {
+    state.saveStatus = 'idle';
+    alert('Error al guardar: ' + error.message);
     render();
     return;
   }
-  enterRealResultsEditor();
+  quiniela.predictions = newPredictions;
+  quiniela.updatedAt = Date.now();
+  state.saveStatus = 'saved';
+  render();
+  setTimeout(() => { state.saveStatus = 'idle'; render(); }, 2500);
 }
 
-function enterRealResultsEditor() {
-  // Foto del ranking ANTES de editar, para calcular las flechas al guardar
-  state.rankingSnapshot = snapshotRankingPositions();
-  state.snapshotHadResults = countRealMatchesEntered(state.realResults).total > 0;
+// Admin: guarda cualquier quiniela completa, sin restricción de ronda.
+async function handleAdminSaveQuiniela() {
+  if (!state.isAdminUser) return;
+  const quiniela = getCurrentQuiniela();
+  if (!quiniela) return;
+
+  state.saveStatus = 'saving';
+  render();
+
+  const { error } = await supabaseClient
+    .from('quinielas')
+    .update({ predictions: quiniela.predictions, updated_at: new Date().toISOString() })
+    .eq('id', quiniela.id);
+
+  if (error) {
+    state.saveStatus = 'idle';
+    alert('Error al guardar: ' + error.message);
+    render();
+    return;
+  }
+  quiniela.updatedAt = Date.now();
+  state.saveStatus = 'saved';
+  render();
+  setTimeout(() => { state.saveStatus = 'idle'; render(); }, 2500);
+}
+
+// Admin: avanza config.ko_round a la siguiente ronda (abre la siguiente
+// ronda para todos los participantes).
+async function handleAdvanceRound() {
+  if (!state.isAdminUser) return;
+  const next = state.koEnabled ? nextKoRound(state.koRound) : 'R32';
+  if (!next) { alert('Ya estás en la última ronda (Final).'); return; }
+  if (!confirm('¿Avanzar la ronda activa a "' + next + '"? Los participantes ya no podrán editar la ronda actual.')) return;
+
+  state.saveStatus = 'saving';
+  render();
+
+  const { error } = await supabaseClient
+    .from('config')
+    .update({ ko_round: next, ko_enabled: true })
+    .eq('id', 1);
+
+  if (error) {
+    state.saveStatus = 'idle';
+    alert('Error al avanzar de ronda: ' + error.message);
+    render();
+    return;
+  }
+  state.koRound = next;
+  state.koEnabled = true;
+  state.saveStatus = 'saved';
+  render();
+  setTimeout(() => { state.saveStatus = 'idle'; render(); }, 2500);
+}
+
+async function handleEnterRealResults() {
+  if (!state.user) {
+    handleOpenLogin();
+    return;
+  }
+  const admin = await isAdmin();
+  state.isAdminUser = admin;
+  if (!admin) {
+    alert('Tu cuenta (' + state.user.email + ') no tiene permisos de administrador.');
+    render();
+    return;
+  }
   if (!state.realResults) state.realResults = emptyPredictions();
   state.view = 'realResults';
   state.activeTab = 'groups';
@@ -2901,207 +2807,64 @@ function enterRealResultsEditor() {
   render();
 }
 
-function submitPassword() {
-  const m = state.modal;
-  if (!m || m.type !== 'password') return;
-  if (m.input === ADMIN_PASSWORD) {
-    state.realAuth = true;
-    const target = m.target;
-    state.modal = null;
-    if (target === 'realResults') {
-      enterRealResultsEditor();
-    } else {
-      render();
-    }
-  } else {
-    state.modal.error = true;
-    state.modal.input = '';
-    render();
-  }
+function handleOpenLogin() {
+  state.modal = { type: 'login', email: '', status: 'idle', error: null };
+  render();
 }
 
+async function handleSendMagicLink() {
+  const m = state.modal;
+  if (!m || m.type !== 'login') return;
+  const email = m.email.trim();
+  if (!email) { state.modal.error = 'Ingresa tu correo.'; render(); return; }
+  state.modal.status = 'sending';
+  state.modal.error = null;
+  render();
+  const { error } = await supabaseClient.auth.signInWithOtp({
+    email,
+    options: { emailRedirectTo: window.location.href.split('#')[0] }
+  });
+  if (!state.modal || state.modal.type !== 'login') return; // el modal ya se cerró
+  if (error) {
+    state.modal.status = 'idle';
+    state.modal.error = error.message;
+  } else {
+    state.modal.status = 'sent';
+  }
+  render();
+}
+
+async function handleSignOut() {
+  await supabaseClient.auth.signOut();
+  state.user = null;
+  state.isAdminUser = false;
+  render();
+}
+
+// Admin: guarda config.real_results (los resultados reales del torneo).
 async function handleSaveRealResults() {
+  if (!state.isAdminUser) { alert('Solo un administrador puede guardar resultados reales.'); return; }
   state.saveStatus = 'saving';
   render();
-  try {
-    // La foto tomada al abrir (ranking antes de estos cambios) pasa a ser la
-    // referencia de las flechas. Solo si ya había resultados antes, para no
-    // mostrar flechas sin sentido la primera vez.
-    if (state.snapshotHadResults && state.rankingSnapshot) {
-      state.previousRanking = state.rankingSnapshot;
-    }
-    saveStored(); // guarda realResults + previousRanking
-    // Nueva foto base por si guarda otra vez en la misma sesión
-    state.rankingSnapshot = snapshotRankingPositions();
-    state.snapshotHadResults = countRealMatchesEntered(state.realResults).total > 0;
-    state.saveStatus = 'saved';
-    render();
-    setTimeout(() => {
-      state.saveStatus = 'idle';
-      render();
-    }, 2500);
-  } catch (e) {
+
+  const { error } = await supabaseClient
+    .from('config')
+    .update({ real_results: state.realResults })
+    .eq('id', 1);
+
+  if (error) {
     state.saveStatus = 'idle';
-    alert('Error al guardar.');
+    alert('Error al guardar: ' + error.message);
     render();
+    return;
   }
+  state.saveStatus = 'saved';
+  render();
+  setTimeout(() => { state.saveStatus = 'idle'; render(); }, 2500);
 }
 
 function handleRanking() {
   state.view = 'ranking';
-  render();
-}
-
-// === Exportar el ranking como imagen JPG (html2canvas) ===
-async function exportRankingImage() {
-  const node = document.getElementById('wc-ranking-capture');
-  if (!node) return;
-  if (!window.html2canvas) {
-    alert('La herramienta de imagen aún se está cargando. Espera unos segundos e intenta de nuevo.');
-    return;
-  }
-  const btn = document.getElementById('wc-export-img-btn');
-  if (btn) { btn.disabled = true; btn.textContent = 'Generando...'; }
-  node.classList.add('exporting');
-  try {
-    const canvas = await html2canvas(node, {
-      backgroundColor: '#060914',
-      scale: 2,
-      useCORS: true,
-      logging: false
-    });
-    const link = document.createElement('a');
-    link.download = 'ranking-quiniela-' + fileStamp() + '.jpg';
-    link.href = canvas.toDataURL('image/jpeg', 0.95);
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-  } catch (e) {
-    alert('No se pudo generar la imagen. Intenta de nuevo.');
-  } finally {
-    node.classList.remove('exporting');
-    if (btn) { btn.disabled = false; btn.textContent = '📷 Descargar como imagen'; }
-  }
-}
-
-function fileStamp() {
-  const d = new Date();
-  const p = (n) => String(n).padStart(2, '0');
-  return d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-' + p(d.getHours()) + p(d.getMinutes());
-}
-
-// === Respaldo: exportar todas las quinielas a un archivo JSON ===
-function handleExportBackup() {
-  const data = {
-    app: 'quiniela-mundial-2026',
-    version: 1,
-    exportedAt: Date.now(),
-    own: state.own,
-    imported: state.imported,
-    realResults: state.realResults
-  };
-  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'respaldo-quinielas-' + fileStamp() + '.json';
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-}
-
-// === Respaldo: restaurar desde un archivo JSON (no sobreescribe lo existente) ===
-function handleRestoreBackup() {
-  const input = document.createElement('input');
-  input.type = 'file';
-  input.accept = 'application/json,.json';
-  input.onchange = (e) => {
-    const file = e.target.files && e.target.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      try {
-        const data = JSON.parse(reader.result);
-        if (!data || data.app !== 'quiniela-mundial-2026') {
-          alert('Ese archivo no es un respaldo válido de la quiniela.');
-          return;
-        }
-        let added = 0;
-        if (data.own) {
-          Object.entries(data.own).forEach(([id, q]) => {
-            if (!state.own[id]) { state.own[id] = q; added++; }
-          });
-        }
-        if (data.imported) {
-          Object.entries(data.imported).forEach(([id, q]) => {
-            if (!state.imported[id]) { state.imported[id] = q; added++; }
-          });
-        }
-        // Solo recupera resultados reales si en este dispositivo no hay ninguno
-        if (data.realResults && !state.realResults) {
-          state.realResults = data.realResults;
-        }
-        saveStored();
-        alert('Respaldo restaurado. Se agregaron ' + added + ' quiniela(s) nueva(s).');
-        render();
-      } catch (err) {
-        alert('No se pudo leer el archivo. ¿Está completo?');
-      }
-    };
-    reader.readAsText(file);
-  };
-  input.click();
-}
-
-function handleShare(id) {
-  const q = state.own[id];
-  if (!q) return;
-  // Asegurar guardado primero
-  q.updatedAt = Date.now();
-  saveStored();
-  const url = buildShareUrl(q);
-  state.modal = { type: 'share', url: url };
-  render();
-}
-
-function handleImport() {
-  const input = state.importInput.trim();
-  if (!input) { alert('Pega un link primero.'); return; }
-  let code = input;
-  // Si pegan una URL completa, extraer el código
-  const hashIdx = input.indexOf('#q=');
-  if (hashIdx !== -1) {
-    code = input.slice(hashIdx + 3);
-  }
-  const q = decodeQuiniela(code);
-  if (!q) {
-    alert('Link inválido o corrupto.');
-    return;
-  }
-  // Check duplicate
-  const existing = Object.entries(state.imported).find(([, ex]) =>
-    ex.name === q.name && ex.updatedAt === q.updatedAt
-  );
-  if (existing) {
-    alert('Ya tienes esta versión de la quiniela de ' + q.name + ' importada.');
-    return;
-  }
-  const id = newId();
-  state.imported[id] = q;
-  state.importInput = '';
-  saveStored();
-  state.currentId = id;
-  state.currentSource = 'imported';
-  state.view = 'read';
-  state.activeTab = 'groups';
-  render();
-}
-
-function handleDelete(id, source) {
-  const q = source === 'own' ? state.own[id] : state.imported[id];
-  if (!q) return;
-  state.modal = { type: 'confirm-delete', id, source, name: q.name };
   render();
 }
 
@@ -3113,22 +2876,21 @@ function closeModal() {
 // ============================================================
 // INICIALIZACIÓN
 // ============================================================
-function init() {
-  const stored = loadStored();
-  state.own = stored.own;
-  state.imported = stored.imported;
+async function init() {
+  document.getElementById('root').textContent = 'Cargando quinielas…';
+  const stored = await loadStored();
+  state.quinielas = stored.quinielas;
   state.realResults = stored.realResults;
-  state.previousRanking = stored.previousRanking || {};
+  state.koRound = stored.koRound;
+  state.koEnabled = stored.koEnabled;
 
-  // Si llegan desde un link compartido
-  const hashCode = parseUrlHash();
-  if (hashCode) {
-    const q = decodeQuiniela(hashCode);
-    if (q) {
-      state.modal = { type: 'import-confirm', quiniela: q };
-    } else {
-      alert('El link recibido no es válido.');
-      clearUrlHash();
+  const { data: { session } } = await supabaseClient.auth.getSession();
+  state.user = session ? session.user : null;
+  if (state.user) {
+    state.isAdminUser = await isAdmin();
+    if (!state.isAdminUser) {
+      const mine = state.quinielas.find(q => q.ownerId === state.user.id);
+      state.myQuinielaId = mine ? mine.id : null;
     }
   }
 
