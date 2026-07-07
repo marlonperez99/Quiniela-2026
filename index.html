@@ -1706,9 +1706,10 @@ function buildRanking() {
   // Tabla de sistema de puntos (info)
   container.appendChild(el('div', { className: 'wc-info' },
     el('strong', {}, 'Sistema de puntos: '),
-    'Grupos 1/3 · R32 y Octavos 2/5 · Cuartos 4/8 · Semis y 3er Lugar 5/10 · Final 8/15 ',
+    'Grupos 1/3 · Eliminatorias (R32 a Final) 2/6 ',
     el('span', { style: { color: 'var(--text-dim)', fontStyle: 'italic' } },
-      '(acertar resultado / marcador exacto). En eliminatorias, "acertar resultado" = acertar quién avanza.'
+      '(acertar resultado / marcador exacto). En eliminatorias, "acertar resultado" = acertar quién avanza; ' +
+      'en empate real, predecir empate con otro marcador da 2 y +1 extra si también acertaste quién pasa en penales.'
     )
   ));
 
@@ -2332,14 +2333,10 @@ function computeBracket(predictions, realSeedR32) {
 // SISTEMA DE PUNTOS (basado en sistema 365Scores/Bolao)
 // ============================================================
 const SCORING = {
-  groups: { result: 1, exact: 3 },
-  R32:    { result: 2, exact: 5 },
-  R16:    { result: 2, exact: 5 },
-  QF:     { result: 4, exact: 8 },
-  SF:     { result: 5, exact: 10 },
-  TH:     { result: 5, exact: 10 },
-  FN:     { result: 8, exact: 15 }
+  groups: { result: 1, exact: 3 }
 };
+// Eliminatorias (R32 a Final): sistema plano, igual para todas las rondas.
+const KO_EXACT = 6, KO_WINNER = 2, KO_TIE_ADV_BONUS = 1;
 
 function scoreGroupMatch(pred, real, scoring) {
   if (!real || real.s1 === '' || real.s2 === '') return { points: 0, status: 'pending' };
@@ -2354,50 +2351,54 @@ function scoreGroupMatch(pred, real, scoring) {
   return { points: 0, status: 'fallo' };
 }
 
-function scoreKnockoutMatch(pred, real, scoring) {
+function scoreKnockoutMatch(pred, real) {
   // pred y real ya verificados como mismos equipos (en cualquier orden)
   if (!real || real.s1 === '' || real.s2 === '') return { points: 0, status: 'pending' };
   if (!pred || pred.s1 === '' || pred.s2 === '') return { points: 0, status: 'no-pred' };
 
+  // Alineamos el marcador real a la orientación de la predicción (pred.t1, pred.t2)
   const sameOrder = pred.t1 === real.t1;
+  const rs1 = sameOrder ? real.s1 : real.s2;
+  const rs2 = sameOrder ? real.s2 : real.s1;
 
-  let ps1 = parseInt(pred.s1, 10), ps2 = parseInt(pred.s2, 10);
-  const rs1 = parseInt(real.s1, 10), rs2 = parseInt(real.s2, 10);
+  const ps1 = pred.s1, ps2 = pred.s2;
 
-  // Normalizamos para comparar marcador exacto en mismo orden
-  const psNormalized1 = sameOrder ? ps1 : ps2;
-  const psNormalized2 = sameOrder ? ps2 : ps1;
-  const exact = psNormalized1 === rs1 && psNormalized2 === rs2;
+  // Marcador exacto: vale siempre KO_EXACT, aunque falle el penal en un empate real.
+  const exact = String(ps1) === String(rs1) && String(ps2) === String(rs2);
+  if (exact) return { points: KO_EXACT, status: 'exacto' };
 
-  // Clasificado real
-  let realAdv;
-  if (rs1 > rs2) realAdv = real.t1;
-  else if (rs2 > rs1) realAdv = real.t2;
-  else realAdv = real.pen;
+  const realIsTie = parseInt(rs1, 10) === parseInt(rs2, 10);
+  const predIsTie = parseInt(ps1, 10) === parseInt(ps2, 10);
 
-  // Clasificado predicho (usa equipos en orden original de predicción)
-  let predAdv;
-  if (ps1 > ps2) predAdv = pred.t1;
-  else if (ps2 > ps1) predAdv = pred.t2;
-  else predAdv = pred.pen;
+  const realWinner = determineWinner(pred.t1, pred.t2, { s1: rs1, s2: rs2, pen: real.pen });
+  const predWinner = determineWinner(pred.t1, pred.t2, { s1: ps1, s2: ps2, pen: pred.pen });
 
-  const advCorrect = predAdv && realAdv && predAdv === realAdv;
+  if (realIsTie && predIsTie) {
+    // Predijo empate con otro marcador → KO_WINNER; +KO_TIE_ADV_BONUS si además
+    // acertó quién pasó en penales.
+    if (predWinner && realWinner && predWinner === realWinner) {
+      return { points: KO_WINNER + KO_TIE_ADV_BONUS, status: 'empate-avanza' };
+    }
+    return { points: KO_WINNER, status: 'empate' };
+  }
 
-  if (exact && advCorrect) return { points: scoring.exact, status: 'exacto' };
-  if (advCorrect)          return { points: scoring.result, status: 'resultado' };
-  if (exact)               return { points: scoring.result, status: 'resultado-reg' };
+  // Regla general de "quién avanza" (partidos sin empate real, o empate real con
+  // predicción decisiva que aun así acertó al que avanzó).
+  if (predWinner && realWinner && predWinner === realWinner) {
+    return { points: KO_WINNER, status: 'ganador' };
+  }
   return { points: 0, status: 'fallo' };
 }
 
 function scoreQuiniela(predictions, realResults) {
   const breakdown = {
     groups: { points: 0, exact: 0, result: 0, scored: 0, total: 72, maxPossible: 72 * SCORING.groups.exact },
-    R32:    { points: 0, exact: 0, result: 0, scored: 0, total: 16, maxPossible: 16 * SCORING.R32.exact },
-    R16:    { points: 0, exact: 0, result: 0, scored: 0, total: 8,  maxPossible: 8  * SCORING.R16.exact },
-    QF:     { points: 0, exact: 0, result: 0, scored: 0, total: 4,  maxPossible: 4  * SCORING.QF.exact },
-    SF:     { points: 0, exact: 0, result: 0, scored: 0, total: 2,  maxPossible: 2  * SCORING.SF.exact },
-    TH:     { points: 0, exact: 0, result: 0, scored: 0, total: 1,  maxPossible: 1  * SCORING.TH.exact },
-    FN:     { points: 0, exact: 0, result: 0, scored: 0, total: 1,  maxPossible: 1  * SCORING.FN.exact }
+    R32:    { points: 0, exact: 0, result: 0, scored: 0, total: 16, maxPossible: 16 * KO_EXACT },
+    R16:    { points: 0, exact: 0, result: 0, scored: 0, total: 8,  maxPossible: 8  * KO_EXACT },
+    QF:     { points: 0, exact: 0, result: 0, scored: 0, total: 4,  maxPossible: 4  * KO_EXACT },
+    SF:     { points: 0, exact: 0, result: 0, scored: 0, total: 2,  maxPossible: 2  * KO_EXACT },
+    TH:     { points: 0, exact: 0, result: 0, scored: 0, total: 1,  maxPossible: 1  * KO_EXACT },
+    FN:     { points: 0, exact: 0, result: 0, scored: 0, total: 1,  maxPossible: 1  * KO_EXACT }
   };
   let total = 0;
 
@@ -2437,11 +2438,11 @@ function scoreQuiniela(predictions, realResults) {
         if (!kp || kp.s1 === '' || kp.s2 === '') return; // sin predicción
 
         const pred = { t1: real.t1, t2: real.t2, s1: kp.s1, s2: kp.s2, pen: kp.pen };
-        const r = scoreKnockoutMatch(pred, real, SCORING[round]);
+        const r = scoreKnockoutMatch(pred, real);
         breakdown[round].points += r.points;
         total += r.points;
         if (r.status === 'exacto') breakdown[round].exact += 1;
-        if (r.status === 'resultado' || r.status === 'resultado-reg') breakdown[round].result += 1;
+        else if (r.points > 0) breakdown[round].result += 1;
         breakdown[round].scored += 1;
       });
     }
