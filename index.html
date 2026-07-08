@@ -586,8 +586,26 @@ body, html {
   color: var(--text-muted);
   text-align: center;
   letter-spacing: 1px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
 }
 .wc-ranking-pos.pos-1 { font-size: 32px; }
+.wc-move {
+  font-family: 'Oswald', sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 3px;
+}
+.wc-move.up   { color: var(--accent-green); background: rgba(46,168,104,0.14); }
+.wc-move.down { color: var(--accent-red);   background: rgba(205,37,51,0.16); }
+.wc-move.same { color: var(--text-dim); font-size: 12px; padding: 0; background: none; }
+.wc-move.new  { color: var(--gold); background: rgba(201,164,76,0.14); font-size: 9px; }
 .wc-ranking-name { min-width: 0; }
 .wc-ranking-participant {
   font-family: 'Oswald', sans-serif;
@@ -648,6 +666,28 @@ body, html {
   text-transform: uppercase;
 }
 .wc-ranking-actions { white-space: nowrap; }
+
+/* Contenedor capturable para exportar el ranking como imagen */
+.wc-capture {
+  background:
+    radial-gradient(ellipse at top, rgba(201,164,76,0.06), transparent 50%),
+    var(--bg);
+  padding: 8px;
+  border-radius: 4px;
+}
+.wc-capture-foot {
+  display: none;
+  margin-top: 18px;
+  text-align: center;
+  font-family: 'Oswald', sans-serif;
+  font-size: 11px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+/* Mientras se genera la imagen: ocultar botones de acción y mostrar el pie */
+.wc-capture.exporting .wc-ranking-actions { display: none; }
+.wc-capture.exporting .wc-capture-foot { display: block; }
 @media (max-width: 720px) {
   .wc-ranking-row {
     grid-template-columns: 50px 1fr auto;
@@ -679,6 +719,7 @@ body, html {
 }
 .wc-save-status { font-size: 12px; color: var(--text-muted); }
 .wc-save-status.saved { color: var(--accent-green); }
+.wc-round-toggles { display: flex; flex-wrap: wrap; gap: 8px; }
 .wc-section-title {
   font-family: 'Oswald', sans-serif;
   font-size: 14px;
@@ -790,6 +831,7 @@ body, html {
 <body>
 <div id="root"></div>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js" defer></script>
 <script>
 // ============================================================
 // DATOS
@@ -1420,12 +1462,14 @@ async function loadStored() {
       })),
       realResults: configData ? configData.real_results : null,
       koRound: configData ? configData.ko_round : null,
-      koEnabled: configData ? !!configData.ko_enabled : false
+      koEnabled: configData ? !!configData.ko_enabled : false,
+      previousRanking: configData ? (configData.previous_ranking || {}) : {},
+      closedRounds: configData ? (configData.closed_rounds || {}) : {}
     };
   } catch (e) {
     console.error('Error cargando datos de Supabase:', e);
     alert('No se pudieron cargar las quinielas desde Supabase.');
-    return { quinielas: [], realResults: null, koRound: null, koEnabled: false };
+    return { quinielas: [], realResults: null, koRound: null, koEnabled: false, previousRanking: {}, closedRounds: {} };
   }
 }
 
@@ -1444,8 +1488,12 @@ const state = {
   currentSource: null,   // legado; sin uso en modo solo-lectura
   quinielas: [],         // filas de Supabase (antes own + imported)
   realResults: null,     // estructura igual a predictions
-  koRound: null,         // config.ko_round: ronda activa para participantes
-  koEnabled: false,      // config.ko_enabled
+  koRound: null,         // config.ko_round: informativo/puntaje, ya no controla ediciones
+  koEnabled: false,      // config.ko_enabled: activa el conteo de puntos de eliminatorias
+  closedRounds: {},      // config.closed_rounds: { R32: true, ... } — ronda cerrada por el admin
+  previousRanking: {},   // config.previous_ranking: { quinielaId: posición } para las flechas ▲▼
+  rankingSnapshot: null, // foto de posiciones tomada al abrir "Resultados Reales"
+  snapshotHadResults: false, // ¿ya había resultados reales al tomar esa foto?
   user: null,            // usuario de Supabase Auth (o null si no hay sesión)
   isAdminUser: false,    // ¿el usuario logueado aparece en la tabla admins?
   myQuinielaId: null,    // id de la quiniela reclamada por el usuario logueado (si no es admin)
@@ -1668,30 +1716,46 @@ function buildQuinielaItem(q) {
   );
 }
 
-function buildRanking() {
-  // Fase 6: las quinielas ya vienen unificadas desde Supabase.
-  const all = state.quinielas;
-
-  // Calcular puntos
-  const scored = all.map(q => {
-    const result = scoreQuiniela(q.predictions, state.realResults);
-    return { ...q, score: result };
-  });
-
-  // Ordenar por puntos descendente, luego por exactos descendente
+// Todas las quinielas con su puntaje, ya ordenadas (mismo criterio del ranking).
+function computeRanking() {
+  const scored = state.quinielas.map(q => ({ ...q, score: scoreQuiniela(q.predictions, state.realResults) }));
   scored.sort((a, b) => {
     if (b.score.total !== a.score.total) return b.score.total - a.score.total;
     const aExact = a.score.breakdown ? Object.values(a.score.breakdown).reduce((s, x) => s + x.exact, 0) : 0;
     const bExact = b.score.breakdown ? Object.values(b.score.breakdown).reduce((s, x) => s + x.exact, 0) : 0;
     return bExact - aExact;
   });
+  return scored;
+}
 
+// Foto { quinielaId: posición } del ranking actual, para comparar después.
+function snapshotRankingPositions() {
+  const pos = {};
+  computeRanking().forEach((q, idx) => { pos[q.id] = idx; });
+  return pos;
+}
+
+function buildRanking() {
+  const scored = computeRanking();
   const realCount = countRealMatchesEntered(state.realResults);
+  const hasArrows = state.previousRanking && Object.keys(state.previousRanking).length > 0;
 
   const container = el('div', { className: 'wc-container' });
-  container.appendChild(el('button', { className: 'wc-back-link', onClick: handleBack }, '← Volver'));
 
-  container.appendChild(el('div', { className: 'wc-hero' },
+  // Barra superior (no se incluye en la imagen exportada)
+  container.appendChild(el('div', {
+    style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px', marginBottom: '8px' }
+  },
+    el('button', { className: 'wc-back-link', style: { marginBottom: '0' }, onClick: handleBack }, '← Volver'),
+    scored.length > 0
+      ? el('button', { className: 'wc-btn wc-btn-secondary wc-btn-sm', id: 'wc-export-img-btn', onClick: exportRankingImage }, '📷 Descargar como imagen')
+      : null
+  ));
+
+  // Bloque capturable para la imagen JPG
+  const capture = el('div', { id: 'wc-ranking-capture', className: 'wc-capture' });
+
+  capture.appendChild(el('div', { className: 'wc-hero' },
     el('div', { className: 'wc-hero-eyebrow' }, 'Ranking Mundial 2026'),
     el('h1', { className: 'wc-hero-title' }, '🏆 Ranking'),
     el('div', { className: 'wc-hero-rule' }),
@@ -1704,7 +1768,7 @@ function buildRanking() {
   ));
 
   // Tabla de sistema de puntos (info)
-  container.appendChild(el('div', { className: 'wc-info' },
+  capture.appendChild(el('div', { className: 'wc-info' },
     el('strong', {}, 'Sistema de puntos: '),
     'Grupos 1/3 · Eliminatorias (R32 a Final) 2/6 ',
     el('span', { style: { color: 'var(--text-dim)', fontStyle: 'italic' } },
@@ -1714,9 +1778,10 @@ function buildRanking() {
   ));
 
   if (scored.length === 0) {
-    container.appendChild(el('div', { className: 'wc-empty' },
+    capture.appendChild(el('div', { className: 'wc-empty' },
       'No hay quinielas creadas o importadas todavía.'
     ));
+    container.appendChild(capture);
     return container;
   }
 
@@ -1726,11 +1791,26 @@ function buildRanking() {
     const isLeader = idx === 0 && q.score.total > 0;
     const row = el('div', { className: 'wc-ranking-row' + (isLeader ? ' leader' : '') });
 
-    // Posición
+    // Posición + flecha de movimiento vs el ranking previo
     const posCls = idx === 0 ? 'pos-1' : idx === 1 ? 'pos-2' : idx === 2 ? 'pos-3' : '';
-    row.appendChild(el('div', { className: 'wc-ranking-pos ' + posCls },
+    const posCell = el('div', { className: 'wc-ranking-pos ' + posCls },
       idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : String(idx + 1)
-    ));
+    );
+    if (hasArrows) {
+      const prev = state.previousRanking[q.id];
+      let mv;
+      if (prev == null) {
+        mv = el('span', { className: 'wc-move new' }, 'NUEVO');
+      } else if (idx < prev) {
+        mv = el('span', { className: 'wc-move up' }, '▲ ' + (prev - idx));
+      } else if (idx > prev) {
+        mv = el('span', { className: 'wc-move down' }, '▼ ' + (idx - prev));
+      } else {
+        mv = el('span', { className: 'wc-move same' }, '=');
+      }
+      posCell.appendChild(mv);
+    }
+    row.appendChild(posCell);
 
     // Nombre y origen
     const nameBlock = el('div', { className: 'wc-ranking-name' },
@@ -1778,15 +1858,61 @@ function buildRanking() {
 
     list.appendChild(row);
   });
-  container.appendChild(list);
+  capture.appendChild(list);
+
+  // Pie de la imagen (solo visible dentro de la captura)
+  capture.appendChild(el('div', { className: 'wc-capture-foot' },
+    'Quiniela Mundial 2026 · ' + new Date().toLocaleDateString('es-GT', { day: '2-digit', month: 'long', year: 'numeric' })
+  ));
+
+  container.appendChild(capture);
 
   return container;
+}
+
+// Exporta el bloque de ranking como imagen JPG (para compartir por WhatsApp).
+async function exportRankingImage() {
+  const node = document.getElementById('wc-ranking-capture');
+  if (!node) return;
+  if (!window.html2canvas) {
+    alert('La herramienta de imagen aún se está cargando. Espera unos segundos e intenta de nuevo.');
+    return;
+  }
+  const btn = document.getElementById('wc-export-img-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Generando...'; }
+  node.classList.add('exporting');
+  try {
+    const canvas = await html2canvas(node, {
+      backgroundColor: '#060914',
+      scale: 2,
+      useCORS: true,
+      logging: false
+    });
+    const link = document.createElement('a');
+    link.download = 'ranking-quiniela-' + fileStamp() + '.jpg';
+    link.href = canvas.toDataURL('image/jpeg', 0.95);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  } catch (e) {
+    alert('No se pudo generar la imagen. Intenta de nuevo.');
+  } finally {
+    node.classList.remove('exporting');
+    if (btn) { btn.disabled = false; btn.textContent = '📷 Descargar como imagen'; }
+  }
+}
+
+function fileStamp() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-' + p(d.getHours()) + p(d.getMinutes());
 }
 
 // Fase 6 (paso 3): ronda activa para participantes.
 // El "Tercer Lugar" vive en la misma pestaña que la Final, así que para
 // efectos de ronda activa/bloqueo se tratan como una sola etapa 'FN'.
 const KO_ROUND_ORDER = ['R32', 'R16', 'QF', 'SF', 'FN'];
+const KO_ROUND_LABEL = { R32: '16vos', R16: '8vos', QF: '4tos', SF: 'Semis', FN: 'Final' };
 
 function nextKoRound(current) {
   const idx = KO_ROUND_ORDER.indexOf(current);
@@ -1798,15 +1924,21 @@ function activeParticipantRound() {
   return state.koEnabled ? state.koRound : 'groups';
 }
 
-// Admin puede editar cualquier ronda de cualquier quiniela.
-// Un participante solo puede editar la ronda activa de SU quiniela reclamada,
-// y solo si no la ha enviado ya (predictions.lockedRounds).
+// Primera ronda de eliminatorias que el admin NO ha cerrado (para elegir una
+// pestaña por default sensata al entrar a "Editar" como participante).
+function firstOpenRoundForParticipant() {
+  return KO_ROUND_ORDER.find(r => !state.closedRounds[r]) || 'groups';
+}
+
+// Admin puede editar cualquier ronda de cualquier quiniela, siempre.
+// Un participante puede editar SU quiniela reclamada en cualquier ronda de
+// eliminatorias que el admin no haya cerrado (config.closed_rounds) —
+// puede guardar cuantas veces quiera mientras la ronda siga abierta.
 function isRoundEditable(quiniela, tabId) {
   if (state.isAdminUser) return true;
   if (!quiniela || !state.myQuinielaId || quiniela.id !== state.myQuinielaId) return false;
-  if (tabId !== activeParticipantRound()) return false;
-  const locked = (quiniela.predictions && quiniela.predictions.lockedRounds) || [];
-  return !locked.includes(tabId);
+  if (!KO_ROUND_ORDER.includes(tabId)) return false; // grupos: siempre bloqueado para participantes
+  return !state.closedRounds[tabId];
 }
 
 function buildForm() {
@@ -1848,6 +1980,22 @@ function buildForm() {
       'Aquí ingresas los marcadores reales del torneo conforme se vayan jugando. ' +
       'Estos puntuarán automáticamente todas las quinielas en el ranking. ' +
       'Funciona igual que una quiniela normal — la Ronda de 32 y siguientes se llenan solas.'
+    ));
+    container.appendChild(el('div', { className: 'wc-card', style: { marginBottom: '18px' } },
+      el('div', { className: 'wc-card-title' }, 'Control de rondas'),
+      el('div', { style: { fontSize: '13px', color: 'var(--text-dim)', marginBottom: '12px' } },
+        'Mientras una ronda esté abierta, cada participante puede editar y guardar su predicción las veces que quiera. Al cerrarla, queda de solo lectura para todos (menos para ti).'
+      ),
+      el('div', { className: 'wc-round-toggles' },
+        KO_ROUND_ORDER.map(r => {
+          const closed = !!state.closedRounds[r];
+          return el('button', {
+            className: 'wc-btn wc-btn-sm ' + (closed ? 'wc-btn-danger' : 'wc-btn-secondary'),
+            onClick: () => handleToggleRoundClosed(r),
+            disabled: state.saveStatus === 'saving' ? 'disabled' : null
+          }, KO_ROUND_LABEL[r] + ': ' + (closed ? '🔒 Cerrada' : '🔓 Abierta'));
+        })
+      )
     ));
   } else if (readOnly) {
     container.appendChild(el('div', { className: 'wc-readonly-banner' },
@@ -1997,10 +2145,10 @@ function buildForm() {
       el('span', { className: 'wc-save-status' + (state.saveStatus === 'saved' ? ' saved' : '') },
         state.saveStatus === 'saving' ? 'Guardando...' :
         state.saveStatus === 'saved' ? '✓ Guardado' :
-        editable ? 'Recuerda enviar esta ronda' : 'Esta pestaña no es tu ronda activa o ya la enviaste'
+        editable ? 'Puedes guardar cuando quieras mientras esta ronda esté abierta' : 'Esta ronda está cerrada'
       ),
       editable ? el('button', { className: 'wc-btn', onClick: handleParticipantSaveRound, disabled: state.saveStatus === 'saving' },
-        state.saveStatus === 'saving' ? 'Enviando...' : 'Enviar esta ronda'
+        state.saveStatus === 'saving' ? 'Guardando...' : 'Guardar'
       ) : null
     );
     container.appendChild(saveBar);
@@ -2717,7 +2865,7 @@ function handleEdit(id) {
   state.currentId = id;
   state.currentSource = 'quinielas';
   state.view = 'edit';
-  state.activeTab = state.isAdminUser ? 'groups' : activeParticipantRound();
+  state.activeTab = state.isAdminUser ? 'groups' : firstOpenRoundForParticipant();
   render();
 }
 
@@ -2761,24 +2909,22 @@ function handleBack() {
   render();
 }
 
-// Participante: envía y bloquea SU ronda activa en SU quiniela reclamada.
+// Participante: guarda SU predicción de la pestaña activa en SU quiniela
+// reclamada. Ya no bloquea nada — puede guardar cuantas veces quiera mientras
+// el admin no haya cerrado esa ronda (config.closed_rounds).
 async function handleParticipantSaveRound() {
   if (state.isAdminUser) return;
   const quiniela = getCurrentQuiniela();
   if (!quiniela || quiniela.id !== state.myQuinielaId) return;
-  const round = activeParticipantRound();
+  const round = state.activeTab;
   if (!isRoundEditable(quiniela, round)) return;
 
   state.saveStatus = 'saving';
   render();
 
-  const locked = new Set(quiniela.predictions.lockedRounds || []);
-  locked.add(round);
-  const newPredictions = { ...quiniela.predictions, lockedRounds: [...locked] };
-
   const { error } = await supabaseClient
     .from('quinielas')
-    .update({ predictions: newPredictions, updated_at: new Date().toISOString() })
+    .update({ predictions: quiniela.predictions, updated_at: new Date().toISOString() })
     .eq('id', quiniela.id);
 
   if (error) {
@@ -2787,7 +2933,6 @@ async function handleParticipantSaveRound() {
     render();
     return;
   }
-  quiniela.predictions = newPredictions;
   quiniela.updatedAt = Date.now();
   state.saveStatus = 'saved';
   render();
@@ -2826,7 +2971,7 @@ async function handleAdvanceRound() {
   if (!state.isAdminUser) return;
   const next = state.koEnabled ? nextKoRound(state.koRound) : 'R32';
   if (!next) { alert('Ya estás en la última ronda (Final).'); return; }
-  if (!confirm('¿Avanzar la ronda activa a "' + next + '"? Los participantes ya no podrán editar la ronda actual.')) return;
+  if (!confirm('¿Avanzar la ronda activa a "' + next + '"? (Esto es solo informativo / para el puntaje — ya no bloquea la edición de los participantes; usa "Cerrar ronda" para eso.)')) return;
 
   state.saveStatus = 'saving';
   render();
@@ -2849,6 +2994,40 @@ async function handleAdvanceRound() {
   setTimeout(() => { state.saveStatus = 'idle'; render(); }, 2500);
 }
 
+// Admin: cierra o abre una ronda de eliminatorias para TODOS los participantes
+// (config.closed_rounds, compartido). Mientras esté abierta, cada quien puede
+// editar y guardar su predicción de esa ronda las veces que quiera.
+async function handleToggleRoundClosed(round) {
+  if (!state.isAdminUser) return;
+  const closingIt = !state.closedRounds[round];
+  const label = (KO_ROUND_LABEL[round] || round);
+  const msg = closingIt
+    ? '¿Cerrar ' + label + '? Los participantes ya no podrán editarla (tú sí, siempre).'
+    : '¿Reabrir ' + label + '? Los participantes podrán volver a editarla y guardarla.';
+  if (!confirm(msg)) return;
+
+  const newClosed = { ...state.closedRounds, [round]: closingIt };
+
+  state.saveStatus = 'saving';
+  render();
+
+  const { error } = await supabaseClient
+    .from('config')
+    .update({ closed_rounds: newClosed })
+    .eq('id', 1);
+
+  if (error) {
+    state.saveStatus = 'idle';
+    alert('Error al ' + (closingIt ? 'cerrar' : 'abrir') + ' la ronda: ' + error.message);
+    render();
+    return;
+  }
+  state.closedRounds = newClosed;
+  state.saveStatus = 'saved';
+  render();
+  setTimeout(() => { state.saveStatus = 'idle'; render(); }, 2500);
+}
+
 async function handleEnterRealResults() {
   if (!state.user) {
     handleOpenLogin();
@@ -2861,6 +3040,9 @@ async function handleEnterRealResults() {
     render();
     return;
   }
+  // Foto del ranking ANTES de editar, para calcular las flechas ▲▼ al guardar.
+  state.rankingSnapshot = snapshotRankingPositions();
+  state.snapshotHadResults = countRealMatchesEntered(state.realResults).total > 0;
   if (!state.realResults) state.realResults = emptyPredictions();
   state.view = 'realResults';
   state.activeTab = 'groups';
@@ -2908,9 +3090,17 @@ async function handleSaveRealResults() {
   state.saveStatus = 'saving';
   render();
 
+  // La foto tomada al abrir (ranking antes de este cambio) pasa a ser la
+  // referencia de las flechas ▲▼. Solo si ya había resultados antes, para no
+  // mostrar flechas sin sentido la primera vez que se guardan resultados.
+  const payload = { real_results: state.realResults };
+  if (state.snapshotHadResults && state.rankingSnapshot) {
+    payload.previous_ranking = state.rankingSnapshot;
+  }
+
   const { error } = await supabaseClient
     .from('config')
-    .update({ real_results: state.realResults })
+    .update(payload)
     .eq('id', 1);
 
   if (error) {
@@ -2919,6 +3109,11 @@ async function handleSaveRealResults() {
     render();
     return;
   }
+  if (payload.previous_ranking) state.previousRanking = payload.previous_ranking;
+  // Nueva foto base por si se guarda otra vez en la misma sesión.
+  state.rankingSnapshot = snapshotRankingPositions();
+  state.snapshotHadResults = countRealMatchesEntered(state.realResults).total > 0;
+
   state.saveStatus = 'saved';
   render();
   setTimeout(() => { state.saveStatus = 'idle'; render(); }, 2500);
@@ -2944,6 +3139,8 @@ async function init() {
   state.realResults = stored.realResults;
   state.koRound = stored.koRound;
   state.koEnabled = stored.koEnabled;
+  state.previousRanking = stored.previousRanking || {};
+  state.closedRounds = stored.closedRounds || {};
 
   const { data: { session } } = await supabaseClient.auth.getSession();
   state.user = session ? session.user : null;
